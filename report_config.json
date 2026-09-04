@@ -1,0 +1,388 @@
+{
+  "template_pptx": "C:\\Users\\5600\\Documents\\MLFX Report\\26\\09\\09.02\\box-4-1-09001-20260902-模流分析报告.pptx",
+  "output_dir": "c:\\Users\\5600\\Documents\\ZDH\\MLFXBG",
+  "open_after_export": true,
+  "show_gui_before_run": false,
+  "screenshot_mode": "B",
+  "image_settings": {
+    "width": 0,
+    "height": 0,
+    "keep_view": true,
+    "hide_axis": false,
+    "plot_legend": true,
+    "plot_plot_info": true
+  },
+  "animation_settings": {
+    "frames": 50,
+    "delay_ms": 80,
+    "optimize_gif": true
+  },
+  "plots": [
+    {
+      "slide": 4,
+      "category": "flow",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "gif",
+      "key": "filling_animation",
+      "plot_name": "充填时间",
+      "aliases": [
+        "充填时间",
+        "填充时间",
+        "充填",
+        "Filling time"
+      ],
+      "enabled": true,
+      "desc": "★ 动态充填动画 (GIF 动图)"
+    },
+    {
+      "slide": 5,
+      "category": "flow",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "pressure",
+      "plot_name": "压力",
+      "aliases": [
+        "压力",
+        "充填压力",
+        "流动结束时的压力",
+        "Pressure at end of fill",
+        "Pressure"
+      ],
+      "enabled": true,
+      "desc": "★ 充填结束时的压力"
+    },
+    {
+      "slide": 6,
+      "category": "flow",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "vp_switch_pressure",
+      "plot_name": "速度/压力切换时的压力",
+      "aliases": [
+        "速度/压力切换时的压力",
+        "V/P转换时的压力",
+        "V/P转换",
+        "Pressure at V/P switch"
+      ],
+      "enabled": true,
+      "desc": "★ V/P 转换及其压力分布"
+    },
+    {
+      "slide": 7,
+      "category": "pack",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "inj_pressure_xy",
+      "plot_name": "注射位置处压力:XY 图",
+      "aliases": [
+        "注射位置处压力:XY 图",
+        "注射位置处压力",
+        "Pressure at injection location: XY Plot",
+        "Pressure at injection location"
+      ],
+      "enabled": true,
+      "desc": "★ 注射位置处压力 XY 图 (可覆盖标题)"
+    },
+    {
+      "slide": 8,
+      "category": "flow",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "flow_front_temp",
+      "plot_name": "流动前沿温度",
+      "aliases": [
+        "流动前沿温度",
+        "料头温度",
+        "熔体前沿温度",
+        "Temperature at flow front"
+      ],
+      "enabled": true,
+      "desc": "★ 流动前沿温度"
+    },
+    {
+      "slide": 9,
+      "category": "pack",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "clamp_force_xy",
+      "plot_name": "锁模力:XY 图",
+      "aliases": [
+        "锁模力:XY 图",
+        "锁模力",
+        "锁模力: XY 图",
+        "Clamp force: XY Plot",
+        "Clamp force"
+      ],
+      "enabled": true,
+      "desc": "★ 锁模力 XY 图 (可覆盖标题)"
+    },
+    {
+      "slide": 10,
+      "category": "flow",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "weld_lines",
+      "plot_name": "熔接痕",
+      "aliases": [
+        "熔接痕",
+        "熔合线",
+        "夹水纹",
+        "Weld lines"
+      ],
+      "enabled": true,
+      "desc": "★ 熔接痕分布"
+    },
+    {
+      "slide": 11,
+      "category": "pack",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "volumetric_shrinkage",
+      "plot_name": "顶出时的体积收缩率",
+      "aliases": [
+        "顶出时的体积收缩率",
+        "体积收缩率",
+        "收缩率",
+        "Volumetric shrinkage at ejection",
+        "Volumetric shrinkage"
+      ],
+      "enabled": true,
+      "desc": "★ 体积收缩率"
+    },
+    {
+      "slide": 12,
+      "category": "pack",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "sink_marks",
+      "plot_name": "缩痕估算",
+      "aliases": [
+        "缩痕估算",
+        "缩痕指数",
+        "缩痕深度",
+        "缩痕",
+        "Sink mark estimate",
+        "Sink marks"
+      ],
+      "enabled": true,
+      "desc": "★ 缩痕估算分布"
+    },
+    {
+      "slide": 13,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warpage_all",
+      "plot_name": "变形，所有效应:变形",
+      "aliases": [
+        "变形，所有效应:变形",
+        "变形，所有效应变形",
+        "变形，所有效应: 变形",
+        "所有效应:变形",
+        "所有效应变形",
+        "变形: 所有因素: 变形",
+        "变形，所有因素:变形",
+        "总变形",
+        "翘曲",
+        "Deflection, all effects: deflection",
+        "Deflection, all effects:Deflection",
+        "Deflection"
+      ],
+      "enabled": true,
+      "desc": "★ 变形: 所有效应变形"
+    },
+    {
+      "slide": 14,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warpage_x",
+      "plot_name": "变形，所有效应:X 方向",
+      "aliases": [
+        "变形，所有效应:X 方向",
+        "变形，所有效应:X方向",
+        "变形，所有效应: X 方向",
+        "所有效应:X 方向",
+        "变形，所有效应:X 分量",
+        "变形，所有效应:X分量",
+        "变形，所有效应: X 分量",
+        "所有效应:X 分量",
+        "变形: 所有因素: X 分量",
+        "变形，所有因素:X 分量",
+        "X 方向",
+        "X 分量",
+        "X方向变形",
+        "Deflection, all effects:X Component",
+        "Deflection, all effects: X Component"
+      ],
+      "enabled": false,
+      "desc": "★ 变形: 所有效应: X 方向"
+    },
+    {
+      "slide": 15,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warpage_y",
+      "plot_name": "变形，所有效应:Y 方向",
+      "aliases": [
+        "变形，所有效应:Y 方向",
+        "变形，所有效应:Y方向",
+        "变形，所有效应: Y 方向",
+        "所有效应:Y 方向",
+        "变形，所有效应:Y 分量",
+        "变形，所有效应:Y分量",
+        "变形，所有效应: Y 分量",
+        "所有效应:Y 分量",
+        "变形: 所有因素: Y 分量",
+        "变形，所有因素:Y 分量",
+        "Y 方向",
+        "Y 分量",
+        "Y方向变形",
+        "Deflection, all effects:Y Component",
+        "Deflection, all effects: Y Component"
+      ],
+      "enabled": false,
+      "desc": "★ 变形: 所有效应: Y 方向"
+    },
+    {
+      "slide": 16,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warpage_z",
+      "plot_name": "变形，所有效应:Z 方向",
+      "aliases": [
+        "变形，所有效应:Z 方向",
+        "变形，所有效应:Z方向",
+        "变形，所有效应: Z 方向",
+        "所有效应:Z 方向",
+        "变形，所有效应:Z 分量",
+        "变形，所有效应:Z分量",
+        "变形，所有效应: Z 分量",
+        "所有效应:Z 分量",
+        "变形: 所有因素: Z 分量",
+        "变形，所有因素:Z 分量",
+        "Z 方向",
+        "Z 分量",
+        "Z方向变形",
+        "Deflection, all effects:Z Component",
+        "Deflection, all effects: Z Component"
+      ],
+      "enabled": false,
+      "desc": "★ 变形: 所有效应: Z 方向 (垂直视角)",
+      "view_settings": {
+        "rotation": [
+          -90,
+          0,
+          0
+        ],
+        "fit": true
+      }
+    },
+    {
+      "slide": null,
+      "category": "flow",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "temp_bulk",
+      "plot_name": "气穴",
+      "aliases": [
+        "气穴",
+        "包封",
+        "困气",
+        "Air traps"
+      ],
+      "enabled": false,
+      "desc": "气穴分布"
+    },
+    {
+      "slide": null,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warp_diff_cooling",
+      "plot_name": "变形，冷却不均:变形",
+      "aliases": [
+        "变形，冷却不均:变形",
+        "冷却不均",
+        "Deflection, differential cooling: Deflection"
+      ],
+      "enabled": false,
+      "desc": "冷却不均导致的变形"
+    },
+    {
+      "slide": null,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warp_diff_shrinkage",
+      "plot_name": "变形，收缩不均:变形",
+      "aliases": [
+        "变形，收缩不均:变形",
+        "收缩不均",
+        "Deflection, differential shrinkage: Deflection"
+      ],
+      "enabled": false,
+      "desc": "收缩不均导致的变形"
+    },
+    {
+      "slide": null,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warp_orientation",
+      "plot_name": "变形，分子取向:变形",
+      "aliases": [
+        "变形，分子取向:变形",
+        "分子取向",
+        "Deflection, orientation effects: Deflection"
+      ],
+      "enabled": false,
+      "desc": "分子/纤维取向导致的变形"
+    }
+  ],
+  "inj_pressure_settings": {
+    "max_pressure_mpa": 21.45,
+    "peak_time_sec": 5.092
+  },
+  "clamp_force_settings": {
+    "cae_max_ton": 320.5,
+    "machine_max_ton": 350,
+    "peak_time_sec": 6.224
+  }
+}
