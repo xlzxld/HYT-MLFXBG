@@ -332,7 +332,11 @@ def test_broken_model_falls_back_to_viewport(tmp):
     # 渲染断带特征 (4K 实发: 内容高度占比 30%, 宽高比 2.66) → 回退视口图;
     # 同样内容但分辨率与配置一致且非断带 → 正常拼合
     band = np.full((2160, 3840, 3), 255, dtype=np.uint8)
-    band[720:1370, 500:3340] = (30, 30, 200)  # trim 后 ~2850x666: 高占比 31%, 宽高比 4.3
+    band[720:1370, 500:3340] = (
+        30,
+        30,
+        200,
+    )  # trim 后 ~2850x666: 高占比 31%, 宽高比 4.3
     Image.fromarray(band).save(os.path.join(mode_b, "model_pressure.png"))
     ok = ip.merge_scale_and_model(
         os.path.join(mode_b, "scale_pressure.png"),
@@ -1134,7 +1138,7 @@ def test_no_duplicate_rerun_after_completion(tmp):
     vbs_src = open(
         os.path.join(ROOT, "AutoReport.vbs"), encoding="gbk", errors="replace"
     ).read()
-    assert 'gui_run_done.txt' in vbs_src and "WScript.Quit 0" in vbs_src, (
+    assert "gui_run_done.txt" in vbs_src and "WScript.Quit 0" in vbs_src, (
         "VBS 未完成标记守卫 (外层实例仍会重复生成)"
     )
 
