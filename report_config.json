@@ -147,7 +147,7 @@
       "type": "image",
       "key": "warpage_x",
       "plot_name": "变形，所有效应:X 方向",
-      "enabled": true,
+      "enabled": false,
       "desc": "★ 变形: 所有效应: X 方向"
     },
     {
@@ -159,7 +159,7 @@
       "type": "image",
       "key": "warpage_y",
       "plot_name": "变形，所有效应:Y 方向",
-      "enabled": true,
+      "enabled": false,
       "desc": "★ 变形: 所有效应: Y 方向"
     },
     {
@@ -171,7 +171,7 @@
       "type": "image",
       "key": "warpage_z",
       "plot_name": "变形，所有效应:Z 方向",
-      "enabled": true,
+      "enabled": false,
       "desc": "★ 变形: 所有效应: Z 方向 (垂直视角)",
       "view_settings": {
         "rotation": [
