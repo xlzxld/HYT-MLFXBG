@@ -14,7 +14,7 @@ Dim SynergyGetter, Synergy, StudyDoc, PlotManager, Viewer, DiagnosisManager
 Dim StudyName, MeshTypeRaw, DetectedMeshType
 Dim MeshSummary, MeshText
 Dim MatID, MatSubID, MatPlot
-Dim i, pObj, pKey, pName, pType, pEnabled, PlotObj, ImgPath, GifPath
+Dim i, pObj, pKey, pName, pType, pEnabled, PlotObj, GifPath
 Dim PlotsArray, ManifestText, TodayStr, PyCmd, ret, ExportCount, saEnv
 
 Set FSO = CreateObject("Scripting.FileSystemObject")
@@ -585,7 +585,6 @@ For i = 0 To PlotsArray.length - 1
                 ExportCount = ExportCount + 1
             Else
                 ' 普通结果图导出 (支持 1080P/2K)
-                ImgPath = TempDir & "\" & pKey & ".png"
                 ' ---------------- 方案 A: 视口真实抓取 (含完整彩条标尺) ----------------
                 If ScreenshotMode = "A" Or ScreenshotMode = "B" Or ScreenshotMode = "BOTH" Or ScreenshotMode = "ALL" Then
                     On Error Resume Next
@@ -613,9 +612,16 @@ For i = 0 To PlotsArray.length - 1
                     On Error GoTo 0
                 End If
 
-                ImgPath = TempDir & "\" & pKey & ".png"
-                Viewer.SaveImage ImgPath
-                Call LogMsg("结果图已提取: " & pName & " -> " & pKey & ".png")
+                ' 根目录副本: mode_a 同名文件写失败时的兜底源; 加错误保护防整脚本中断 (C-06)
+                On Error Resume Next
+                Viewer.SaveImage TempDir & "\" & pKey & ".png"
+                If Err.Number <> 0 Then
+                    Call LogMsg("WARN: 根目录副本截图异常: " & Err.Description)
+                    Err.Clear
+                Else
+                    Call LogMsg("结果图已提取: " & pName & " -> " & pKey & ".png")
+                End If
+                On Error GoTo 0
                 ExportCount = ExportCount + 1
             
             If hasCustomRot Then

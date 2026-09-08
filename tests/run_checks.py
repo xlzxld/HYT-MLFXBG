@@ -1491,6 +1491,16 @@ def test_vbs_plot_notfound_vs_disabled_log(tmp):
     )
 
 
+def test_vbs_root_copy_saveimage_guarded(tmp):
+    """C-06 回归 (2026-09-09 体检): temp 根目录副本的 Viewer.SaveImage 此前
+    未包 On Error 保护 (同函数内 mode_a/mode_b 导出均有保护), 一旦 COM 失败
+    整个脚本中断且无日志; 现要求该块有错误保护与 WARN 日志。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert "根目录副本截图异常" in vbs, "根目录副本 SaveImage 缺错误保护 (C-06)"
+    seg = vbs.split("根目录副本: mode_a", 1)[1].split("On Error GoTo 0", 1)[0]
+    assert "On Error Resume Next" in seg and "Viewer.SaveImage TempDir" in seg
+
+
 def main():
     tests = [
         (name, fn)
