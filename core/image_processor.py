@@ -238,12 +238,77 @@ def extract_viewport_components(viewport_path):
     return left_bar, triad, title_img
 
 
+def _model_image_usable(path):
+    """模型图完整性判据: 非空白且非断带 (与 merge 三重护栏同判据)。
+    返回 (ok, 原因)。"""
+    try:
+        with Image.open(path) as im:
+            arr = np.array(im.convert("L"))
+        if (arr < 240).mean() <= 0.005:
+            return False, "空白图"
+        h, w = arr.shape
+        ys, xs = np.where(arr < 240)
+        ch = int(ys.max() - ys.min()) + 1
+        cw = int(xs.max() - xs.min()) + 1
+        h_ratio = ch / float(h)
+        aspect = cw / float(ch)
+        if h_ratio < 0.35 and aspect > 2.2:
+            return False, f"断带特征 (高度占比 {h_ratio:.0%}, 宽高比 {aspect:.2f})"
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
+
+def resolve_cover_image(data_dir):
+    """封面模型本体图解析 (2026-09-08 用户二次裁决)。
+
+    背景: 视口截图样式随 Moldflow 图层手工勾选漂移 (CAD 几何层可见时呈灰色
+    光滑样式, 被用户否决; 层对象亦无 Name 属性, CAD 层方案 API 不可行)。
+    改为直出离屏导出的模型本体图 (红色网格着色, 与分析模型完全一致):
+    候选顺序 mode_b/model_pressure.png → mode_b/model_volumetric_shrinkage.png
+    → data_dir/solid_model.png (VBS 视口导出, 最后兜底)。
+    候选经 _model_image_usable 完整性判据, 命中后裁白边写回
+    data_dir/solid_model.png 并返回其路径; 全部落空返回 None (调用方登记缺失)。
+    """
+    mode_b_dir = os.path.join(data_dir, "mode_b")
+    fallback = os.path.join(data_dir, "solid_model.png")
+    candidates = [
+        os.path.join(mode_b_dir, "model_pressure.png"),
+        os.path.join(mode_b_dir, "model_volumetric_shrinkage.png"),
+    ]
+    for cand in candidates:
+        if not os.path.exists(cand):
+            continue
+        ok, reason = _model_image_usable(cand)
+        if not ok:
+            print(
+                f"[image_processor] 封面候选 {os.path.basename(cand)} 不可用: {reason}"
+            )
+            continue
+        trimmed = trim_white_borders(Image.open(cand), border=8)
+        os.makedirs(data_dir, exist_ok=True)
+        trimmed.convert("RGB").save(fallback, "PNG")
+        print(
+            f"[image_processor] 封面模型本体直出: {os.path.basename(cand)} -> solid_model.png"
+        )
+        return fallback
+    if os.path.exists(fallback):
+        ok, reason = _model_image_usable(fallback)
+        if ok:
+            print("[image_processor] 封面回退 VBS 视口导出 solid_model.png")
+            return fallback
+        print(f"[image_processor] 封面回退候选 solid_model.png 不可用: {reason}")
+    return None
+
+
 def generate_solid_cad_model(model_source_path, output_path):
     """
+    [2026-09-08 停用] 灰色 CAD 重着色封面 — 用户裁决该样式与真实实体不符, 为
+    错误样式; 封面改走 resolve_cover_image (模型本体图直出)。函数保留但不再被
+    调用 (如需恢复须显式确认)。
+
     从纯模型着色图生成 100% 纯净、无网格、无节点的 CAD 实体本体图 (供 Slide 1 封面使用)
     采用 Autodesk 经典酷炫 CAD 金属灰/冷蓝灰材质着色与高光阴影
-    [2026-09-08 起为封面回退路径: VBS 图层自适应导出 (Fusion 保留 T) 为首选,
-     仅当其空白/缺失时调用本函数兜底]
     """
     if not os.path.exists(model_source_path):
         return False
@@ -824,14 +889,7 @@ def merge_scale_and_model(
         target_h = max_useful_h
     target_w = int(target_h * 1.58)
 
-    # 缩放模型：高度占用 ~94% 画布高度，实现震撼超大图幅
-    model_avail_h = target_h - 70
-    m_scale = model_avail_h / float(im_model_trimmed.height)
-    m_w = int(im_model_trimmed.width * m_scale)
-    m_h = int(im_model_trimmed.height * m_scale)
-    model_scaled = im_model_trimmed.resize((m_w, m_h), Image.Resampling.LANCZOS)
-
-    # 缩放左侧数据条：高度协调匹配
+    # 缩放左侧数据条：高度协调匹配 (先于模型缩放, 模型宽度约束依赖 lb_w)
     lb_avail_h = target_h - 75
     lb_scale = lb_avail_h / float(left_bar.height)
     lb_w = int(left_bar.width * lb_scale)
@@ -843,6 +901,27 @@ def merge_scale_and_model(
             ImageFilter.UnsharpMask(radius=1.2, percent=110, threshold=2)
         )
 
+    # 缩放模型：高度占用 ~94% 画布高度实现超大图幅；
+    # 宽度双约束 (2026-09-08 修复"模型截图不完整"): 宽模型此前只按高度缩放,
+    # m_w 超出可用宽度后从 rem_x 起粘贴、右侧溢出画布被裁 — 实发用户截图。
+    # rem_w 与下方放置段保持同一几何 (lb_x=35, 间距 20/20)。
+    model_avail_h = target_h - 70
+    rem_x = 35 + lb_w + 20
+    rem_w = target_w - rem_x - 20
+    m_scale = min(
+        model_avail_h / float(im_model_trimmed.height),
+        rem_w / float(im_model_trimmed.width),
+    )
+    if m_scale < model_avail_h / float(im_model_trimmed.height):
+        print(
+            f"[image_processor] 模型受画布宽度约束缩放 "
+            f"(x{m_scale:.3f} < 高度约束 x{model_avail_h / im_model_trimmed.height:.3f}), "
+            "保证完整不入裁"
+        )
+    m_w = max(1, int(im_model_trimmed.width * m_scale))
+    m_h = max(1, int(im_model_trimmed.height * m_scale))
+    model_scaled = im_model_trimmed.resize((m_w, m_h), Image.Resampling.LANCZOS)
+
     # 创建纯白高清画布
     canvas = Image.new("RGB", (target_w, target_h), (255, 255, 255))
 
@@ -851,9 +930,7 @@ def merge_scale_and_model(
     lb_y = 35
     canvas.paste(left_bar_scaled, (lb_x, lb_y))
 
-    # 2. 放置超大模型 (居中偏右)
-    rem_x = lb_x + lb_w + 20
-    rem_w = target_w - rem_x - 20
+    # 2. 放置超大模型 (居中偏右; m_scale 已含宽度约束, 恒完整)
     m_x = rem_x + max(0, (rem_w - m_w) // 2)
     m_y = (target_h - m_h) // 2
     canvas.paste(model_scaled, (m_x, m_y), model_scaled)
@@ -921,50 +998,9 @@ def process_all_mode_b_plots(
                 title_cand.save(ref_title_path)
             break
 
-    # 2. 封面模型本体图 (solid_model.png) 择优:
-    #    首选 VBS「仅亮 CAD 几何图层」导出的 solid_model_cad.png (无网格线,
-    #    2026-09-08 用户裁决, 见 AutoReport.vbs 4.1) → 回退 solid_model.png
-    #    (现行网格自适应导出) → 均空白/缺失时灰色重绘兜底 (FUSION 隐藏 T 曾全白)。
-    solid_out = os.path.join(data_dir, "solid_model.png")
-    cad_out = os.path.join(data_dir, "solid_model_cad.png")
-
-    def _nonblank(path):
-        try:
-            with Image.open(path) as im_s:
-                return (np.array(im_s.convert("L")) < 240).mean() > 0.005
-        except Exception as e:
-            print(f"[image_processor] 读取 {os.path.basename(path)} 失败: {e}")
-            return False
-
-    cover_src = None
-    for cand in (cad_out, solid_out):
-        if os.path.exists(cand):
-            if _nonblank(cand):
-                cover_src = cand
-                break
-            print(f"[image_processor] {os.path.basename(cand)} 为空白图, 弃用")
-    if cover_src is not None and os.path.abspath(cover_src) != os.path.abspath(
-        solid_out
-    ):
-        try:
-            shutil.copyfile(cover_src, solid_out)
-            print("[image_processor] 封面选用 CAD 几何图层导出 (solid_model_cad.png)")
-        except OSError as e:
-            print(f"[image_processor] 封面择优复制失败 ({e}), 沿用 solid_model.png")
-    solid_ok = cover_src is not None
-    if not solid_ok:
-        model_cand = os.path.join(mode_b_dir, "model_pressure.png")
-        if not os.path.exists(model_cand):
-            model_cand = os.path.join(mode_b_dir, "model_volumetric_shrinkage.png")
-        if os.path.exists(model_cand):
-            if generate_solid_cad_model(model_cand, solid_out):
-                print(
-                    "[image_processor] VBS 实体导出空白/缺失, 已回退灰色重绘封面 (solid_model.png)"
-                )
-        else:
-            print(
-                "[image_processor][WARN] 封面无可用来源 (VBS 导出空白且无模型图), 报告封面将登记缺失"
-            )
+    # 2. 封面模型本体图: 已迁移至 resolve_cover_image (由 pptx_builder 在构建
+    #    封面时调用, 方案 A/B 共用同一来源; 2026-09-08 用户二次裁决直出模型图)。
+    #    此处不再处理, 避免与 build_single_report 双写。
 
     # 3. 收集所有需拼合的 key
     all_keys = set()

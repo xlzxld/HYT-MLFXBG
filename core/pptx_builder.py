@@ -14,6 +14,7 @@ try:
         annotate_xy_curves,
         load_peaks,
         process_all_mode_b_plots,
+        resolve_cover_image,
         trim_white_borders,
         load_truetype_font,
     )
@@ -23,6 +24,7 @@ except ImportError:
             annotate_xy_curves,
             load_peaks,
             process_all_mode_b_plots,
+            resolve_cover_image,
             trim_white_borders,
             load_truetype_font,
         )
@@ -30,6 +32,7 @@ except ImportError:
         annotate_xy_curves = None
         load_peaks = None
         process_all_mode_b_plots = None
+        resolve_cover_image = None
         trim_white_borders = None
         load_truetype_font = None
 
@@ -1188,13 +1191,24 @@ def build_single_report(
         print("[Slide 1] Updated cover table info (严格保持微软雅黑 12pt 字体).")
 
         # 替换封面模型图 (纯模型本体截图，无网格、无节点)
-        solid_img = os.path.join(data_dir, "solid_model.png")
-        if not os.path.exists(solid_img):
-            cand_b = os.path.join(data_dir, "mode_b", "solid_model.png")
-            if os.path.exists(cand_b):
-                solid_img = cand_b
+        # 方案 A/B 共用同一条路径: 走 resolve_cover_image 选取最佳可用模型本体图
+        # (优先 mode_b/model_pressure.png → mode_b/model_volumetric_shrinkage.png → solid_model.png,
+        #  并对命中候选做非空/非割裂完整性校验 + 裁白边写回)。
+        solid_img = None
+        if resolve_cover_image is not None:
+            try:
+                solid_img = resolve_cover_image(data_dir)
+            except Exception as e:
+                print(f"[Slide 1] resolve_cover_image 调用异常: {e}")
+                solid_img = None
+        if not solid_img:
+            solid_img = os.path.join(data_dir, "solid_model.png")
+            if not os.path.exists(solid_img):
+                cand_b = os.path.join(data_dir, "mode_b", "solid_model.png")
+                if os.path.exists(cand_b):
+                    solid_img = cand_b
 
-        if os.path.exists(solid_img):
+        if solid_img and os.path.exists(solid_img):
             # T25 体积预算: 封面 CAD 渲染是摄影类大图, 转 JPEG q90 (PNG 保留给线条类拼合图);
             # 派生 jpg 每次无条件重生成, 防上个产品的旧封面混入 (prepare_cover_jpeg 内控)。
             # (封面角章按用户裁决移除: 缺失清单只在完成弹窗与 missing_fields.json 呈现)
@@ -1487,25 +1501,11 @@ def build_single_report(
     if total_slides >= 8:
         fill_material_molding_range(prs.slides[7], data_dir)
 
-    # ------------------ Slide 14 ~ 16: 清理 XYZ 变形图片 ------------------
-    # 用户明确要求：生成的 PPT 保留 XYZ 变形页面与标题，但移除所有截图/图片
-    for s_idx in [13, 14, 15]:  # 0-indexed: Slide 14, 15, 16
-        if s_idx < total_slides:
-            s_warp = prs.slides[s_idx]
-            pic_shapes = [
-                shp for shp in s_warp.shapes if shp.shape_type == MSO_SHAPE_TYPE.PICTURE
-            ]
-            for p_shp in pic_shapes:
-                try:
-                    sp_elem = p_shp._element
-                    sp_elem.getparent().remove(sp_elem)
-                    print(
-                        f"[Slide {s_idx + 1}] Removed picture shape: {p_shp.name} (保留页面与标题，清空图片)"
-                    )
-                except Exception as e:
-                    print(
-                        f"[Slide {s_idx + 1}][Notice] Could not remove picture {p_shp.name}: {e}"
-                    )
+    # ------------------ Slide 14 ~ 16 (XYZ 变形): 不再剥离图片 ------------------
+    # 历史原因: 旧模板 14-16 页内置了 XYZ 变形的占位图, 当时通过程序清空以避免错误结果展示。
+    # 用户裁决 (2026-09-08): 模板本身已手动清空, 此类条目默认不再勾选 (见 report_config.json
+    #   warpage_x/y/z.enabled=false), 因此运行时剥离块的副作用 (把页面正文图片误删) 反而不可接受。
+    # 该块代码移除; 后续如需重新启用 XYZ 变形, 在 PPT 模板直接放对应图片即可, 勿再在程序层剥离。
 
     # 如果有用户勾选的额外结果项目且已导出图片，追加插入新页
     if extra_plots and total_slides >= 5:
