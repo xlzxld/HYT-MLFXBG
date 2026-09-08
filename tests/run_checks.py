@@ -1501,6 +1501,42 @@ def test_vbs_root_copy_saveimage_guarded(tmp):
     assert "On Error Resume Next" in seg and "Viewer.SaveImage TempDir" in seg
 
 
+def test_gbk_tee_write_failure_no_recursion(tmp):
+    """B-06 回归 (2026-09-09 体检): _GbkTee 挂到 sys.stdout 后, 日志文件持续
+    写失败 (磁盘满/句柄被锁) 时只降级到控制台, 绝不在 except 里调 print
+    (print 会再次进入本 write, 无界递归直至 RecursionError)。"""
+    import io
+
+    class _BadFile:
+        def write(self, _b):
+            raise OSError("disk full (模拟)")
+
+        def flush(self):
+            raise OSError("disk full (模拟)")
+
+    log_path = os.path.join(tmp, "run.log")
+    old_out, old_err = sys.stdout, sys.stderr
+    opened = []
+    try:
+        pb._attach_file_logging(log_path)
+        tee = sys.stdout  # _GbkTee 实例 (_attach_file_logging 内嵌套类)
+        opened = [tee.f, sys.stderr.f]
+        tee.stream = io.StringIO()  # 捕获"控制台"侧输出
+        tee.f = _BadFile()  # 注入日志侧持续写失败
+        print("hello")
+        tee.flush()
+    finally:
+        sys.stdout, sys.stderr = old_out, old_err
+        for f in opened:
+            try:
+                f.close()
+            except Exception:
+                pass
+    out = tee.stream.getvalue()
+    assert "hello" in out, "控制台输出丢失"
+    assert "log write failed" in out, "写失败未降级提示"
+
+
 def main():
     tests = [
         (name, fn)

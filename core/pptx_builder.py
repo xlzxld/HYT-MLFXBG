@@ -1885,12 +1885,20 @@ def _attach_file_logging(log_file):
             try:
                 self.f.write(str(s).encode("gbk", errors="replace"))
             except Exception as e:
-                print(f"[Notice] log write failed: {e}")
+                # 日志盘写失败只降级到控制台; 严禁在此 print — print 会再次
+                # 进入本 write, 持续失败时无界递归直至 RecursionError (B-06)
+                try:
+                    self.stream.write(f"[Notice] log write failed: {e}\n")
+                except Exception:
+                    pass
             return len(s)
 
         def flush(self):
             self.stream.flush()
-            self.f.flush()
+            try:
+                self.f.flush()
+            except Exception:
+                pass
 
     sys.stdout = _GbkTee(sys.stdout, log_file)
     sys.stderr = _GbkTee(sys.stderr, log_file)
