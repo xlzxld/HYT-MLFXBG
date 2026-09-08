@@ -702,6 +702,7 @@ ManifestText = "{" & vbCrLf & _
                "  ""study_name"": """ & EscapeJson(StudyName) & """," & vbCrLf & _
                "  ""part_name"": """ & EscapeJson(PartName) & """," & vbCrLf & _
                "  ""mesh_type"": """ & DetectedMeshType & """," & vbCrLf & _
+               "  ""model_dir"": """ & EscapeJson(ModelDir) & """," & vbCrLf & _
                "  ""moldflow_version"": ""2023""," & vbCrLf & _
                "  ""com_method"": """ & ComMethod & """," & vbCrLf & _
                "  ""date"": """ & TodayStr & """" & vbCrLf & _

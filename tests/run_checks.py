@@ -1432,16 +1432,25 @@ def test_resolve_output_dir_for_run(tmp):
 
 def test_output_defaults_to_model_dir_chain(tmp):
     """输出链静态断言: builder 使用 resolve_output_dir_for_run,
-    VBS manifest 写入 model_dir 字段 (GBK 编码完好)。"""
+    VBS manifest 写入 model_dir 字段 (GBK 编码完好)。
+
+    B-01 回归 (2026-09-09 体检): model_dir 断言必须钉到 manifest.json 写点。
+    此前裸子串断言误命中 mesh_summary.json 写点 (AutoReport.vbs 的 MeshJson
+    也含 model_dir), 而 manifest.json 漏写该字段, 输出到模型目录的决策链
+    在真实 VBS→Python 链路上从未生效 (A-01)。"""
     src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
     assert "resolve_output_dir_for_run(config, manifest)" in src, (
         "输出路径决策未接入 manifest.model_dir"
     )
     vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
-    assert '""model_dir"": """ & EscapeJson(ModelDir)' in vbs, (
-        "AutoReport.vbs manifest 未写入 model_dir"
-    )
     assert "ModelDir = CStr(ProjTmp.Path)" in vbs, "VBS 未捕获 Synergy.Project().Path"
+    # 断言钉到 ManifestText 赋值段 (而非全文/Dim 行), 防再误命中 MeshJson 写点
+    seg_start = vbs.index('ManifestText = "{"')
+    seg_end = vbs.index('WriteUtf8TextFile TempDir & "\\manifest.json"', seg_start)
+    manifest_seg = vbs[seg_start:seg_end]
+    assert '""model_dir"": """ & EscapeJson(ModelDir)' in manifest_seg, (
+        "AutoReport.vbs manifest.json 未写入 model_dir (输出目录链断裂)"
+    )
 
 
 def main():
