@@ -12,11 +12,13 @@ T27/T28 重构要点:
 import codecs
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
+import zlib
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_FILE = os.path.join(SCRIPT_DIR, "report_config.json")
@@ -28,6 +30,16 @@ MODE_LABELS = [
     ("B", "方案 B (推荐): 标尺与模型分开导出后智能拼合, 支持后台导出"),
     ("A", "方案 A: 视口直接抓取 (所见即所得, 运行时 Moldflow 窗口需可见)"),
     ("BOTH", "双方案对比: 方案 A 与 B 各生成一份独立报告"),
+]
+
+# 结果勾选区分类页 (cat_id → 标题); 动态合并的方案结果按关键词落入对应分类
+PLOT_CATEGORIES = [
+    ("core", "★ 默认常用 13 项"),
+    ("flow", "流动与充填分析"),
+    ("pack", "保压与缩痕分析"),
+    ("warp", "翘曲与各向变形"),
+    ("cool", "冷却系统分析"),
+    ("fiber", "加纤取向分析"),
 ]
 
 
@@ -78,6 +90,67 @@ def match_plots_to_available(plots, available_names):
     return {p.get("key"): p.get("plot_name") in available for p in plots}
 
 
+def classify_plot_category(name):
+    """按结果名关键词归类到 GUI 分类页 (关键词来自现有配置条目, 不引入别名猜测)。"""
+    if "取向" in name:
+        return "fiber"
+    if "变形" in name or "翘曲" in name:
+        return "warp"
+    if "冷却" in name:
+        return "cool"
+    if "收缩" in name or "缩痕" in name:
+        return "pack"
+    return "flow"
+
+
+def make_dynamic_key(name, existing_keys):
+    """为方案动态结果生成稳定且文件名安全的 key (导出文件名 = key + .png)。
+
+    ASCII slug 优先; 纯中文名 (无 ASCII 可用) 回退 crc32 指纹, 跨次启动稳定;
+    撞 key 追加序号。
+    """
+    base = re.sub(r"[^0-9A-Za-z]+", "_", str(name)).strip("_").lower()
+    if not base:
+        base = f"plot_{zlib.crc32(str(name).encode('utf-8')) & 0xFFFF:05d}"
+    key, idx = base, 2
+    while key in existing_keys:
+        key = f"{base}_{idx}"
+        idx += 1
+    return key
+
+
+def merge_available_plots(cfg, names):
+    """把方案实际结果清单合并进 cfg['plots'] (供配置面板展示全部结果)。
+
+    已有条目 (按 plot_name 精确比对) 不动; 新名字追加动态条目:
+    无页码/默认不勾选/标 dynamic, 保存时仅保留被勾选的动态项。
+    返回新增条目列表。
+    """
+    existing_names = {str(p.get("plot_name", "")) for p in cfg.get("plots", [])}
+    existing_keys = {p.get("key") for p in cfg.get("plots", [])}
+    added = []
+    for name in names:
+        name = str(name).strip()
+        if not name or name in existing_names:
+            continue
+        key = make_dynamic_key(name, existing_keys)
+        existing_keys.add(key)
+        entry = {
+            "slide": None,
+            "category": classify_plot_category(name),
+            "mesh_support": ["all"],
+            "type": "image",
+            "key": key,
+            "plot_name": name,
+            "enabled": False,
+            "desc": "方案内结果 (取自 Moldflow 结果清单)",
+            "dynamic": True,
+        }
+        cfg.setdefault("plots", []).append(entry)
+        added.append(entry)
+    return added
+
+
 def extract_new_log_text(path, offset, decoder_state=None):
     """读取日志文件自 offset 起的新增内容, 返回 (text, new_offset)。
 
@@ -126,6 +199,17 @@ class ConfigApp:
                 f"report_config.json 无法读取: {cfg_err}\n"
                 f"已用默认配置启动; 保存时将覆盖损坏文件。",
             )
+        # 启动即合并上次留在 temp/available_plots.json 的方案结果清单:
+        # 配置面板展示"当前模型分析出的所有结果", 不再只有硬编码的 17 项。
+        try:
+            if os.path.exists(AVAILABLE_PLOTS_FILE):
+                with open(AVAILABLE_PLOTS_FILE, "r", encoding="utf-8-sig") as f:
+                    _ap = json.load(f)
+                _names = _ap.get("plots") if isinstance(_ap, dict) else None
+                if isinstance(_names, list) and _names:
+                    merge_available_plots(self.cfg, [str(x) for x in _names])
+        except Exception as e:
+            print(f"[Notice] 合并方案结果清单失败: {e}")
         self.plot_vars = {}
         self.slide_vars = {}
         self.plot_checkbuttons = {}
@@ -138,7 +222,8 @@ class ConfigApp:
 
         self.create_widgets()
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-        self.root.bind("<Return>", self.on_enter_key)
+        # 注: 不绑定全局 <Return> 触发生成 — 报告生成完毕后按 Enter (含关闭完成
+        # 弹窗的余波) 曾经由 on_enter_key 重新拉起整条流水线, 属严重缺陷, 已移除。
         self.root.after(400, self.startup_env_check)
         self.root.after(600, self.refresh_available_plots_async)
 
@@ -235,21 +320,7 @@ class ConfigApp:
         self.avail_label.pack(side=tk.RIGHT)
         self.notebook = ttk.Notebook(list_group)
         self.notebook.pack(fill=tk.BOTH, expand=True)
-        categories = [
-            ("core", "★ 默认常用 13 项"),
-            ("flow", "流动与充填分析"),
-            ("pack", "保压与缩痕分析"),
-            ("warp", "翘曲与各向变形"),
-            ("cool", "冷却系统分析"),
-            ("fiber", "加纤取向分析"),
-        ]
-        plots = self.cfg.get("plots", [])
-        for p in plots:
-            self.plot_vars[p["key"]] = tk.BooleanVar(value=p.get("enabled", False))
-        for cat_id, cat_title in categories:
-            tab_frame = ttk.Frame(self.notebook, padding="5")
-            self.notebook.add(tab_frame, text=cat_title)
-            self.populate_tab(tab_frame, cat_id, plots)
+        self._build_plot_tabs()
 
         # 4. 高级设置折叠区 (一次性配置)
         self.adv_btn = ttk.Button(
@@ -271,7 +342,10 @@ class ConfigApp:
             row=0, column=2
         )
         ttk.Label(path_group, text="输出目录:").grid(row=1, column=0, sticky=tk.W)
-        self.out_var = tk.StringVar(value=self.cfg.get("output_dir", ""))
+        # 输出目录留空 = 默认输出到脚本同级目录 (项目根); 相对路径相对项目根解析
+        self.out_var = tk.StringVar(
+            value=self.cfg.get("output_dir") or SCRIPT_DIR
+        )
         ttk.Entry(path_group, textvariable=self.out_var).grid(
             row=1, column=1, sticky=tk.EW, padx=5, pady=2
         )
@@ -294,9 +368,8 @@ class ConfigApp:
             quality_group,
             textvariable=self.res_var,
             values=[
-                "1920x1080 (1080P 高清)",
-                "2560x1440 (2K 超高清推荐)",
-                "3840x2160 (4K 极清)",
+                "1920x1080 (1080P 高清·推荐)",
+                "2560x1440 (2K 超高清)",
                 "0x0 (当前视口原生尺寸)",
             ],
             state="readonly",
@@ -431,6 +504,21 @@ class ConfigApp:
             )
         self.adv_open = not self.adv_open
 
+    def _build_plot_tabs(self):
+        """按当前 cfg['plots'] (含动态合并项) 重建分类页; 合并新结果后复用。"""
+        for tab_id in list(self.notebook.tabs()):
+            self.notebook.forget(tab_id)
+        for child in self.notebook.winfo_children():
+            child.destroy()
+        plots = self.cfg.get("plots", [])
+        for p in plots:
+            if p["key"] not in self.plot_vars:
+                self.plot_vars[p["key"]] = tk.BooleanVar(value=p.get("enabled", False))
+        for cat_id, cat_title in PLOT_CATEGORIES:
+            tab_frame = ttk.Frame(self.notebook, padding="5")
+            self.notebook.add(tab_frame, text=cat_title)
+            self.populate_tab(tab_frame, cat_id, plots)
+
     def populate_tab(self, parent, cat_id, plots):
         canvas = tk.Canvas(parent, borderwidth=0, highlightthickness=0)
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
@@ -528,9 +616,20 @@ class ConfigApp:
             w, h = map(int, res_str.split("x"))
         else:
             w, h = 1920, 1080
+        # 4K (3840x2160) 已移除: SaveImage3 在 4K 下实机定案大面积断带
+        # (AI_GUIDE.md 坑册); 旧配置/手改配置在此钳到 1080P, 与 VBS 侧守卫双保险。
+        if w >= 3840 or h >= 2160:
+            print("[ConfigGUI] 4K 已禁用 (SaveImage3 断带缺陷), 钳到 1920x1080")
+            w, h = 1920, 1080
 
         self.cfg["template_pptx"] = self.tpl_var.get().strip()
-        self.cfg["output_dir"] = self.out_var.get().strip()
+        out_dir = self.out_var.get().strip()
+        # 等于脚本目录时存空串, 配置保持可移植 (空 = 项目根, 与 pptx_builder 同规则)
+        if os.path.normcase(os.path.abspath(out_dir)) == os.path.normcase(
+            SCRIPT_DIR
+        ):
+            out_dir = ""
+        self.cfg["output_dir"] = out_dir
         self.cfg["open_after_export"] = self.open_var.get()
         self.cfg["show_gui_before_run"] = self.show_gui_var.get()
         self.cfg["screenshot_mode"] = self.mode_var.get()
@@ -555,6 +654,7 @@ class ConfigApp:
             machine_ton = None
         self.cfg.setdefault("clamp_force_settings", {})["machine_max_ton"] = machine_ton
 
+        kept_plots = []
         for p in self.cfg.get("plots", []):
             k = p["key"]
             if k in self.plot_vars:
@@ -564,6 +664,11 @@ class ConfigApp:
                     p["slide"] = int(self.slide_vars[k].get().strip())
                 except (TypeError, ValueError):
                     pass  # 非法页码保留原值; 撞页校验兜底
+            # 动态合并项未勾选时不落盘, 配置保持精简 (下次启动按清单重新合并)
+            if p.get("dynamic") and not p.get("enabled"):
+                continue
+            kept_plots.append(p)
+        self.cfg["plots"] = kept_plots
         return self.cfg
 
     def _duplicate_slides_error(self):
@@ -602,9 +707,16 @@ class ConfigApp:
             problems.append(dup_err)
         template = self.tpl_var.get().strip()
         if not template:
-            problems.append("PPT 模板路径为空 → 在高级设置中选择模板文件")
-        elif not os.path.exists(template):
-            problems.append(f"模板文件不存在: {template} → 重新选择有效模板")
+            problems.append("PPT 模板路径为空 → 在 templates/ 放置模板并填写相对路径")
+        else:
+            # 相对路径相对脚本目录解析 (与 core/pptx_builder.resolve_template_path 同规则)
+            tpl_abs = (
+                template if os.path.isabs(template) else os.path.join(SCRIPT_DIR, template)
+            )
+            if not os.path.exists(tpl_abs):
+                problems.append(
+                    f"模板文件不存在: {tpl_abs} → 重新选择有效模板 (默认 templates/ 下)"
+                )
         if not any(v.get() for v in self.plot_vars.values()):
             problems.append("未勾选任何分析结果项 → 至少勾选一项再生成")
         if problems:
@@ -705,13 +817,14 @@ class ConfigApp:
         self.finish_run(self.run_proc.poll() if self.run_proc else -1, cancelled=True)
 
     def invalidate_partial_output(self):
-        """取消后失效本次产物指针; 完整性由下次运行的陈旧产物清理兜底。"""
-        try:
-            marker = os.path.join(SCRIPT_DIR, "temp", "last_output_path.txt")
-            if os.path.exists(marker):
-                os.remove(marker)
-        except Exception as e:
-            print(f"[Notice] Could not invalidate last_output_path.txt: {e}")
+        """取消后失效本次产物指针与完成标记; 完整性由下次运行的陈旧产物清理兜底。"""
+        for name in ("last_output_path.txt", "gui_run_done.txt"):
+            try:
+                marker = os.path.join(SCRIPT_DIR, "temp", name)
+                if os.path.exists(marker):
+                    os.remove(marker)
+            except Exception as e:
+                print(f"[Notice] Could not invalidate {name}: {e}")
 
     def finish_run(self, rc, cancelled=False):
         self.run_proc = None
@@ -722,6 +835,18 @@ class ConfigApp:
         )
         if cancelled:
             return
+        # 写完成标记: 外层 VBS 实例 (show_gui_before_run 拉起本 GUI 并等待返回)
+        # 靠它识别"本次生成已由 GUI 驱动完成", 直接退出, 杜绝整条流水线再跑一遍。
+        # 成功/失败都写 (内容=退出码): 失败后同样不允许外层实例静默重跑。
+        try:
+            with open(
+                os.path.join(SCRIPT_DIR, "temp", "gui_run_done.txt"),
+                "w",
+                encoding="utf-8",
+            ) as f:
+                f.write(str(rc))
+        except OSError as e:
+            print(f"[Notice] Could not write gui_run_done.txt: {e}")
         if rc == 0:
             # T1/T13: 完成弹窗附数据完整性清单 (缺失字段要求操作者知情确认)
             missing_info = ""
@@ -745,6 +870,8 @@ class ConfigApp:
                 "生成完成",
                 "模流分析报告已生成。\n如未自动打开, 请查看输出目录。" + missing_info,
             )
+            # 生成成功后关闭窗口: 断掉"用户关窗 → 外层 VBS 实例续跑"的重复生成链路
+            self.root.destroy()
         else:
             meaning = {1: "环境问题 (模板缺失/Python 依赖缺失)", 2: "构建失败"}.get(
                 rc, "未知错误"
@@ -796,6 +923,9 @@ class ConfigApp:
             )
             return
         names = result.get("plots", [])
+        # 先合并新增结果 (配置面板随之扩展), 再做精确名匹配
+        merge_available_plots(self.cfg, names)
+        self._build_plot_tabs()
         matched = match_plots_to_available(self.cfg.get("plots", []), names)
         default_plots = [
             p
@@ -810,6 +940,7 @@ class ConfigApp:
             ),
             foreground="#1a7f37",
         )
+        # 默认 13 项: 命中才勾选 (既有裁决), 未命中灰显提示
         for p in default_plots:
             k = p.get("key")
             hit = matched.get(k, False)
@@ -820,17 +951,25 @@ class ConfigApp:
                     text=base if hit else f"{base}   （方案中未找到）",
                     foreground=None if hit else "#b0b0b0",
                 )
+        # 其余条目 (含动态合并项): 不改勾选状态, 仅标注在方案中是否存在
+        default_keys = {p.get("key") for p in default_plots}
+        for p in self.cfg.get("plots", []):
+            k = p.get("key")
+            if k in default_keys or k not in self.plot_vars:
+                continue
+            hit = matched.get(k, False)
+            base = self.plot_label_base.get(k, "")
+            for w in self.plot_checkbuttons.get(k, []):
+                w.configure(
+                    text=f"{base}   （方案中未找到）" if not hit else base,
+                    foreground=None if hit else "#b0b0b0",
+                )
 
     def open_log(self):
         if os.path.exists(RUN_LOG):
             os.startfile(RUN_LOG)
         else:
             messagebox.showinfo("暂无日志", "尚未产生运行日志。")
-
-    def on_enter_key(self, event):
-        if self.run_proc is None or self.run_proc.poll() is not None:
-            self.run_btn.invoke()
-        return "break"
 
     def on_close(self):
         if self.run_proc is not None and self.run_proc.poll() is None:

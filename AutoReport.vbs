@@ -21,12 +21,8 @@ Set FSO = CreateObject("Scripting.FileSystemObject")
 Set WshShell = CreateObject("WScript.Shell")
 
 ' 1. 确定基准目录与临时目录
-BaseDir = "c:\Users\5600\Documents\ZDH\MLFXBG"
-On Error Resume Next
-If FSO.FileExists(FSO.GetParentFolderName(WScript.ScriptFullName) & "\report_config.json") Then
-    BaseDir = FSO.GetParentFolderName(WScript.ScriptFullName)
-End If
-On Error GoTo 0
+' 可移植性: 基准目录一律取本脚本所在目录 (模板/输出/临时目录均相对它解析), 不再硬编码机器路径
+BaseDir = FSO.GetParentFolderName(WScript.ScriptFullName)
 
 TempDir = BaseDir & "\temp"
 ConfigPath = BaseDir & "\report_config.json"
@@ -64,6 +60,13 @@ If CBool(ConfigObj.show_gui_before_run) And fromGui <> "1" Then
     ret = WshShell.Run("python """ & BaseDir & "\config_gui.py""", 1, True)
     ConfigJsonStr = ReadUtf8TextFile(ConfigPath)
     Set ConfigObj = HTML.parentWindow.parseJSON(ConfigJsonStr)
+
+'  完成标记守卫: GUI 里点生成会自行拉起本脚本跑完整流程; 用户关窗返回到本实例后,
+'  若标记存在说明本次已生成过, 直接退出 — 否则会把 Moldflow 导出 + PPT 再跑一遍。
+    If FSO.FileExists(TempDir & "\gui_run_done.txt") Then
+        Call LogMsg("检测到 gui_run_done.txt: 本次生成已由配置界面驱动完成, 退出避免重复运行")
+        WScript.Quit 0
+    End If
 End If
 
 ImageWidth = CLng(ConfigObj.image_settings.width)
@@ -80,6 +83,14 @@ If ScreenshotMode = "" Then ScreenshotMode = "B"
 Call LogMsg("截图方案模式: " & ScreenshotMode)
 
 Call LogMsg("画质参数: Width=" & ImageWidth & ", Height=" & ImageHeight & ", NFrames=" & NFrames)
+
+' 4K (3840x2160) 已禁用: SaveImage3 离屏导出在 4K 下实机定案大面积断带 (AI_GUIDE.md 坑册)。
+' 旧配置/手改配置在此钳到 1080P, 与 config_gui.collect_config 的钳制双保险。
+If ImageWidth >= 3840 Or ImageHeight >= 2160 Then
+    Call LogMsg("WARN: 画质 " & ImageWidth & "x" & ImageHeight & " 触发 4K 禁用守卫, 钳到 1920x1080")
+    ImageWidth = 1920
+    ImageHeight = 1080
+End If
 
 ' 2.5 陈旧产物清理: 先删本次将重导出的 per-plot 文件, 防止导出中断时旧图混入本次报告
 Dim kk
@@ -102,6 +113,7 @@ DeleteIfPresent TempDir, "material_process.png"
 DeleteIfPresent TempDir, "material_viscosity.png"
 DeleteIfPresent TempDir, "material_pvt.png"
 DeleteIfPresent TempDir, "last_output_path.txt"
+DeleteIfPresent TempDir, "gui_run_done.txt"
 DeleteIfPresent TempDir, "material_info.json"
 DeleteIfPresent TempDir, "material_fields.json"
 DeleteIfPresent TempDir, "mesh_summary.json"
