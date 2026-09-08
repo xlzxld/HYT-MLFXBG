@@ -1559,6 +1559,20 @@ def test_gui_traces_registered_once(tmp):
     assert "trace_add" in bpt, "trace 未统一收口到 _build_plot_tabs"
 
 
+def test_xy_detection_strict_underscore(tmp):
+    """C-04 回归 (2026-09-09 体检): XY 曲线判据收紧为 "_xy"。
+    裸 "xy" in base_name 会误命中含 xy 子串的 key (如 oxygen → 动态结果
+    "氧分布 (oxygen)"), 使普通 3D 云图被当成 2D 曲线图走错误管线;
+    且原条件 "_xy" in b or "xy" in b 前件恒被后件包含, 属冗余。"""
+    src = open(
+        os.path.join(ROOT, "core", "image_processor.py"), encoding="utf-8"
+    ).read()
+    assert 'or "xy" in base_name' not in src, "is_xy 仍含宽匹配 (C-04)"
+    assert '"_xy" in base_name' in src, "is_xy 判据缺失"
+    fn = src.split("def locate_curve_peak", 1)[1].split("\ndef ", 1)[0]
+    assert "arr = np.array(im)" not in fn, "locate_curve_peak 仍存在未用变量 arr"
+
+
 def main():
     tests = [
         (name, fn)

@@ -366,7 +366,6 @@ def locate_curve_peak(img, roi_x, roi_y, default_pos):
     """
     im = img.convert("RGB")
     w, h = im.size
-    arr = np.array(im)
     # 曲线/轴线/刻度文字实测为深灰到黑 (灰度 0-130, 纯黑<40 检不到轴线),
     # 网格线为浅灰 (~203) 不入掩码。
     gray = np.array(im.convert("L"))
@@ -719,7 +718,9 @@ def merge_scale_and_model(
     缺省 1200; 源模型分辨率不足时自动降至 model 高度+70, 绝不放大模糊 (T8)。
     """
     base_name = os.path.basename(output_path).lower()
-    is_xy = "_xy" in base_name or "xy" in base_name
+    # 判据收紧为 "_xy": 裸 "xy" 会误命中含 xy 子串的 key (如 oxygen),
+    # 使普通 3D 云图被当成 2D 曲线图走错误管线 (C-04)
+    is_xy = "_xy" in base_name
 
     # 1. 2D 曲线图处理
     if is_xy:
