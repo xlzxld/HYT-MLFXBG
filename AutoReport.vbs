@@ -680,8 +680,10 @@ For i = 0 To PlotsArray.length - 1
             End If
 End If
         Else
-            Call LogMsg("未启用 (跳过): " & pName)
+            Call LogMsg("方案中未找到结果 (跳过): " & pName)
         End If
+    Else
+        Call LogMsg("未启用 (跳过): " & pName)
     End If
 Next
 

@@ -1480,6 +1480,17 @@ def test_cancel_writes_done_marker(tmp):
     )
 
 
+def test_vbs_plot_notfound_vs_disabled_log(tmp):
+    """B-05 回归 (2026-09-09 体检): "方案中未找到结果" 与 "未启用" 必须是
+    两条不同日志。此前 Else 分支错位: 勾选了但方案中找不到该结果名时,
+    日志打"未启用 (跳过)"误导排查; 真正未启用的条目反而零日志。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert "方案中未找到结果 (跳过)" in vbs, "未找到分支日志文案未修正 (B-05)"
+    assert vbs.count("未启用 (跳过)") == 1, (
+        "未启用日志应恰好一条 (挂在 pEnabled 的 Else 分支)"
+    )
+
+
 def main():
     tests = [
         (name, fn)
