@@ -1411,8 +1411,15 @@ def build_single_report(
         key = p_cfg["key"]
         p_type = p_cfg.get("type", "image")
 
-        # Slide 14~16: 用户明确要求保留页面与标题，但移除所有图片截图
+        # Slide 14~16: 模板契约保留页 (不放结果图)。用户显式勾选并分配到这三页时
+        # 必须登记缺失, 不允许静默丢弃 (2026-09-09 体检 B-03)。
         if slide_no in [14, 15, 16]:
+            record_missing(
+                f"结果图未放置: {key} (第 {slide_no} 页为保留页 14-16, 请改页码或取消勾选)"
+            )
+            print(
+                f"[Slide {slide_no}][WARN] 结果 {key} 分配在保留页 14-16, 未放置图片 (已登记缺失)"
+            )
             continue
 
         # 安全区域配置
@@ -1615,6 +1622,12 @@ def build_single_report(
                 new_slide.shapes.add_picture(img_path, left, top, width, height)
                 print(
                     f"[Extra Slide][{mode_tag}] Added new slide for: {p_cfg.get('plot_name', key)}"
+                )
+            else:
+                # 追加页缺图同样登记缺失: 此前静默跳过, 报告少页无任何提示 (B-02)
+                record_missing(f"结果图缺失: {key} (追加页, 未插入新页)")
+                print(
+                    f"[Extra Slide][{mode_tag}][ERROR] Image not found for {key}, 未追加新页"
                 )
 
     # 确定输出路径: config.output_dir 显式配置优先, 留空默认输出到本次模型所在目录

@@ -1453,6 +1453,20 @@ def test_output_defaults_to_model_dir_chain(tmp):
     )
 
 
+def test_builder_silent_skips_registered(tmp):
+    """B-02/B-03 回归 (2026-09-09 体检): 启用结果被跳过时必须登记缺失,
+    不允许静默丢图 —
+    - 追加页 (extra_plots) 缺图: 此前无 else 分支, 报告少页且 missing 不记录;
+    - 14-16 保留页: 此前 continue 无任何记录, 用户勾选分配到这三页即静默蒸发。"""
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    extra_seg = src.split("if extra_plots and total_slides >= 5:", 1)[1].split(
+        "# 确定输出路径", 1
+    )[0]
+    assert "record_missing" in extra_seg, "追加页缺图仍静默跳过 (B-02)"
+    warp_seg = src.split("if slide_no in [14, 15, 16]:", 1)[1].split("continue", 1)[0]
+    assert "record_missing" in warp_seg, "14-16 保留页仍静默跳过 (B-03)"
+
+
 def main():
     tests = [
         (name, fn)
