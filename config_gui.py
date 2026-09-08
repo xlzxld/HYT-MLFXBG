@@ -928,11 +928,10 @@ class ConfigApp:
         self.status_label.configure(
             text=("已取消" if cancelled else f"运行结束 (退出码 {rc})")
         )
-        if cancelled:
-            return
         # 写完成标记: 外层 VBS 实例 (show_gui_before_run 拉起本 GUI 并等待返回)
-        # 靠它识别"本次生成已由 GUI 驱动完成", 直接退出, 杜绝整条流水线再跑一遍。
-        # 成功/失败都写 (内容=退出码): 失败后同样不允许外层实例静默重跑。
+        # 靠它识别"本次生成已由 GUI 驱动过", 直接退出, 杜绝整条流水线再跑一遍。
+        # 成功/失败/取消都写 (内容=退出码): 取消后若不写, 外层实例在用户关窗后
+        # 看不到标记, 会把导出+生成完整重跑一遍, 违背取消语义 (B-04)。
         try:
             with open(
                 os.path.join(SCRIPT_DIR, "temp", "gui_run_done.txt"),
@@ -942,6 +941,8 @@ class ConfigApp:
                 f.write(str(rc))
         except OSError as e:
             print(f"[Notice] Could not write gui_run_done.txt: {e}")
+        if cancelled:
+            return
         if rc == 0:
             # T1/T13: 完成弹窗附数据完整性清单 (缺失字段要求操作者知情确认)
             missing_info = ""

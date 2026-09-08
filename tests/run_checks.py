@@ -1467,6 +1467,19 @@ def test_builder_silent_skips_registered(tmp):
     assert "record_missing" in warp_seg, "14-16 保留页仍静默跳过 (B-03)"
 
 
+def test_cancel_writes_done_marker(tmp):
+    """B-04 回归 (2026-09-09 体检): 取消生成也必须写 gui_run_done.txt。
+    直接运行 AutoReport.vbs (show_gui_before_run=true) → GUI 内点生成 → 点
+    "取消生成" → 关窗: 若取消不写标记, 外层 VBS 实例看不到标记, 会把
+    Moldflow 导出 + PPT 生成整条流水线重跑一遍, 违背取消语义。"""
+    src = open(os.path.join(ROOT, "config_gui.py"), encoding="utf-8").read()
+    body = src.split("def finish_run", 1)[1].split("\n", 1)[1].split("\n    def ", 1)[0]
+    assert "gui_run_done.txt" in body, "finish_run 未写完成标记"
+    assert body.index("gui_run_done.txt") < body.index("\n        if cancelled:"), (
+        "完成标记写入必须先于 cancelled 提前返回 (取消路径也要写标记, B-04)"
+    )
+
+
 def main():
     tests = [
         (name, fn)
