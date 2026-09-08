@@ -1537,6 +1537,15 @@ def test_gbk_tee_write_failure_no_recursion(tmp):
     assert "log write failed" in out, "写失败未降级提示"
 
 
+def test_fail_policy_helper_used_in_build(tmp):
+    """C-03 回归 (2026-09-09 体检): on_missing_data=fail 检查必须统一走
+    enforce_missing_policy, 不允许 build_single_report 内联重复实现
+    (双实现漂移风险 — helper 目前仅测试引用)。"""
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    body = src.split("def build_single_report", 1)[1].split("\ndef ", 1)[0]
+    assert "enforce_missing_policy(" in body, "fail 策略仍为内联实现 (C-03)"
+
+
 def main():
     tests = [
         (name, fn)

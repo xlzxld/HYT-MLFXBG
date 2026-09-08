@@ -1637,13 +1637,10 @@ def build_single_report(
         filename = f"{study_name}-{today_str}-模流分析报告-{mode_tag}.pptx"
         output_path = os.path.join(out_dir, filename)
 
-    if (
-        str(config.get("on_missing_data", "annotate")).lower() == "fail"
-        and MISSING_FIELDS
-    ):
-        raise RuntimeError(
-            "数据缺失 (on_missing_data=fail): " + "; ".join(MISSING_FIELDS)
-        )
+    # fail 策略统一走 helper, 杜绝双实现漂移 (C-03)
+    enforce_missing_policy(
+        MISSING_FIELDS, str(config.get("on_missing_data", "annotate")).lower()
+    )
 
     output_path = os.path.abspath(output_path)
     # 保存 PPTX（若文件已被独占打开，则自动追加时间戳，避免 PermissionError）
