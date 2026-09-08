@@ -1320,6 +1320,130 @@ def test_default_plot_keys_whitelist(tmp):
         )
 
 
+def test_gui_plot_rows_styled_not_foreground(tmp):
+    """结果项行的更新必须统一走 _set_plot_hit_labels (ttk style 灰显)。
+
+    回归 (实机崩溃): ttk.Checkbutton 没有 foreground 选项,
+    w.configure(foreground=...) 即抛 TclError 'unknown option "-foreground"'。
+    注: avail_label 是 ttk.Label, foreground 合法, 不在禁止范围。
+    """
+    src = open(os.path.join(ROOT, "config_gui.py"), encoding="utf-8").read()
+    body = src.split("def apply_available_plots", 1)[1].split("\n    def ", 1)[0]
+    assert "_set_plot_hit_labels" in body, "灰显更新未走 _set_plot_hit_labels 统一入口"
+    assert "w.configure(" not in body, (
+        "结果项行存在绕过 helper 的直配 (ttk.Checkbutton 无 foreground, 直配即崩)"
+    )
+    helper = src.split("def _set_plot_hit_labels", 1)[1].split("\n    def ", 1)[0]
+    assert "foreground=" not in helper, "辅助方法仍配置颜色属性"
+    assert "PlotMiss.TCheckbutton" in helper, "灰显样式未接入"
+    assert 'self.style.configure("PlotMiss.TCheckbutton"' in src, (
+        "PlotMiss.TCheckbutton 样式未在 ttk.Style 上定义"
+    )
+
+
+def test_compute_safe_box_fit_aspect(tmp):
+    """等比适配几何: 严禁拉伸变形, 结果必须居中于安全框内。"""
+    from PIL import Image
+
+    wide = os.path.join(tmp, "wide.png")
+    Image.new("RGB", (2000, 500), (1, 2, 3)).save(wide, "PNG")
+    # 宽图 (4:1) 入 1000x500 框 → 宽受限: 1000x250, 垂直居中
+    l, t, w, h = pb.compute_safe_box_fit(wide, 0, 0, 1000, 500)
+    assert (l, t, w, h) == (0, 125, 1000, 250), f"宽图适配错误: {(l, t, w, h)}"
+
+    tall = os.path.join(tmp, "tall.png")
+    Image.new("RGB", (500, 2000), (4, 5, 6)).save(tall, "PNG")
+    # 高图 (1:4) 入 1000x500 框 → 高受限: 125x500, 水平居中
+    l2, t2, w2, h2 = pb.compute_safe_box_fit(tall, 0, 0, 1000, 500)
+    assert (l2, t2, w2, h2) == (437, 0, 125, 500), f"高图适配错误: {(l2, t2, w2, h2)}"
+
+    assert pb.compute_safe_box_fit(os.path.join(tmp, "缺.png"), 0, 0, 100, 100) is None
+
+
+def test_insert_or_replace_into_blank_slide(tmp):
+    """模板页无任何图片形状时必须插入新图 (清空模板导出无图回归),
+    几何落在安全框内且保持纵横比; 有主图时仍走替换而非叠加。"""
+    from PIL import Image
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+    from pptx.util import Emu
+
+    img = os.path.join(tmp, "plot.png")
+    Image.new("RGB", (2000, 1000), (10, 20, 30)).save(img, "PNG")
+
+    prs = Presentation()
+    prs.slide_width = Emu(9144000)
+    prs.slide_height = Emu(6858000)
+    blank = prs.slides.add_slide(prs.slide_layouts[6])
+    box = (Emu(914400), Emu(914400), Emu(7315200), Emu(4572000))
+    assert pb.insert_or_replace_picture(blank, img, *box, log_tag="[测试]"), (
+        "空白页插入失败"
+    )
+    pics = [s for s in blank.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
+    assert len(pics) == 1, f"空白页应恰好插入 1 张图, 实际 {len(pics)}"
+    l, t, w, h = pics[0].left, pics[0].top, pics[0].width, pics[0].height
+    b_l, b_t, b_w, b_h = box
+    assert b_l <= l and b_t <= t and l + w <= b_l + b_w and t + h <= b_t + b_h, (
+        f"插入图越出安全框: {(l, t, w, h)}"
+    )
+    assert w == 2 * h, f"纵横比被破坏: {w}/{h}"
+
+    # 已有图片的页面: 替换主图而不是新增形状
+    prs2 = Presentation()
+    prs2.slide_width = Emu(9144000)
+    prs2.slide_height = Emu(6858000)
+    with_pic = prs2.slides.add_slide(prs2.slide_layouts[6])
+    with_pic.shapes.add_picture(img, Emu(1828800), Emu(914400))
+    before = len(with_pic.shapes)
+    assert pb.insert_or_replace_picture(with_pic, img, *box)
+    assert len(with_pic.shapes) == before, "替换路径新增了多余形状"
+
+
+def test_material_quadrant_index(tmp):
+    """Slide 3 四联图象限判定沿用模板历史分界 (4500000/3500000 EMU)。"""
+    assert pb.material_quadrant_index(100000, 100000) == 0, "左上"
+    assert pb.material_quadrant_index(5000000, 100000) == 1, "右上"
+    assert pb.material_quadrant_index(100000, 4000000) == 2, "左下"
+    assert pb.material_quadrant_index(5000000, 4000000) == 3, "右下"
+    assert len(pb.MATERIAL_QUADRANT_KEYS) == 4
+    assert len(pb.MATERIAL_QUADRANT_BOXES) == 4
+
+
+def test_resolve_output_dir_for_run(tmp):
+    """输出目录决策: 显式配置 > manifest.model_dir (目录须存在) > 项目根。"""
+    model_dir = os.path.join(tmp, "模型项目目录")
+    os.makedirs(model_dir)
+
+    assert (
+        pb.resolve_output_dir_for_run({"output_dir": model_dir}, {"model_dir": "X"})
+        == model_dir
+    ), "显式配置必须优先于 manifest"
+    assert pb.resolve_output_dir_for_run({}, {"model_dir": model_dir}) == model_dir, (
+        "留空时应输出到模型所在目录"
+    )
+    assert (
+        pb.resolve_output_dir_for_run({}, {"model_dir": os.path.join(tmp, "不存在")})
+        == pb.PROJECT_ROOT
+    ), "model_dir 不存在时必须回退项目根"
+    assert pb.resolve_output_dir_for_run({}, {}) == pb.PROJECT_ROOT, (
+        "无 manifest 时必须回退项目根"
+    )
+
+
+def test_output_defaults_to_model_dir_chain(tmp):
+    """输出链静态断言: builder 使用 resolve_output_dir_for_run,
+    VBS manifest 写入 model_dir 字段 (GBK 编码完好)。"""
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    assert "resolve_output_dir_for_run(config, manifest)" in src, (
+        "输出路径决策未接入 manifest.model_dir"
+    )
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert '""model_dir"": """ & EscapeJson(ModelDir)' in vbs, (
+        "AutoReport.vbs manifest 未写入 model_dir"
+    )
+    assert "ModelDir = CStr(ProjTmp.Path)" in vbs, "VBS 未捕获 Synergy.Project().Path"
+
+
 def main():
     tests = [
         (name, fn)
