@@ -1024,6 +1024,105 @@ def test_vbs_syntax_compile(tmp):
     assert r.returncode == 0, f"VBS 编译失败: {out[:300]}"
 
 
+def test_left_bar_cutoff_drops_model_fragment(tmp):
+    """方案 B 割裂回归 (2026-09-08 实发): 左侧 340px 数据条带混入模型左缘碎片,
+    拼合后被贴回画布左端形成与主体分离的月牙。必须按色条定位 + 白隙切断。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    w, h = 800, 600
+    img = np.full((h, w, 3), 255, dtype=np.uint8)
+    # 色条 (高饱和) x[60-100), y[50-500)
+    for x in range(60, 100):
+        img[50:500, x] = (255, int(255 * (x - 60) / 40), 0)
+    # 数值标签 (深色) x[105-140)
+    img[200:215, 105:140] = (0, 0, 0)
+    img[480:495, 105:140] = (0, 0, 0)
+    # 白隙 x[145-200)
+    # 模型左缘碎片 (高饱和) x[205-330)
+    img[150:420, 205:330] = (30, 90, 220)
+    path = os.path.join(tmp, "viewport.png")
+    Image.fromarray(img).save(path)
+
+    left_bar, _triad, _title = ip.extract_viewport_components(path)
+    assert left_bar is not None, "左侧数据条未提取到"
+    arr = np.asarray(left_bar.convert("RGB")).astype(np.int16)
+    sat_cols = ((arr.max(axis=2) - arr.min(axis=2)) > 60).mean(axis=0)
+    tail = sat_cols[int(left_bar.width * 0.8) :]
+    assert not (tail > 0.12).any(), (
+        f"left_bar 尾部仍残留模型碎片 (宽 {left_bar.width}, 尾部饱和列 {int((tail > 0.12).sum())})"
+    )
+    assert left_bar.width < 205, f"切断失败 (left_bar 宽 {left_bar.width} 覆盖到碎片区)"
+
+
+def test_curve_peak_axes_frame_locates_apex(tmp):
+    """方案 B 探针回归 (2026-09-08 实发): 裁剪后峰顶落在 ROI 左侧之外 → 回退
+    default_pos 使探针框浮空。轴框定位必须命中真实峰顶, 且不被标题文字干扰。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    w, h = 800, 500
+    img = np.full((h, w, 3), 255, dtype=np.uint8)
+    # y 轴 / x 轴 (深灰: 灰度 100, 纯黑阈值 40 检不到)
+    img[60:450, 100:102] = (100, 100, 100)
+    img[450:452, 100:750] = (100, 100, 100)
+    # 标题文字 (横跨绘图区顶线, 高于峰顶 — 3px 余量曾误检为此块)
+    img[55:85, 400:470] = (20, 20, 20)
+    # 轴外刻度文字 (左/下)
+    img[200:212, 40:90] = (20, 20, 20)
+    img[460:472, 200:260] = (20, 20, 20)
+    # 曲线: 峰顶在 x=120 (ROI x 起点 0.18*800=144 之外, 复现实发失败场景)
+    apex = (120, 150)
+    for x in range(102, 400):
+        y = 150 + int((x - 120) ** 2 / 90)
+        if 60 <= y < 450:
+            img[y : y + 2, x] = (100, 100, 100)
+
+    px, py, method = ip.locate_curve_peak(
+        Image.fromarray(img), (0.18, 0.40), (0.08, 0.32), (0.265, 0.113)
+    )
+    assert method == "axes-frame", f"应走轴框定位, 实际 method={method}"
+    assert abs(px - apex[0]) <= 12 and abs(py - apex[1]) <= 12, (
+        f"探针未落在峰顶: 得到 ({px},{py}), 期望约 {apex}"
+    )
+
+
+def test_no_4k_option(tmp):
+    """4K 已移除 (SaveImage3 4K 断带缺陷): GUI 无 4K 选项且旧配置被钳到 1080P;
+    VBS 侧同样有钳制守卫。"""
+    gui_src = open(os.path.join(ROOT, "config_gui.py"), encoding="utf-8").read()
+    assert "3840x2160 (4K" not in gui_src, "config_gui 仍提供 4K 选项"
+    assert "w >= 3840 or h >= 2160" in gui_src, "config_gui 缺少 4K 钳制守卫"
+    vbs_src = open(
+        os.path.join(ROOT, "AutoReport.vbs"), encoding="gbk", errors="replace"
+    ).read()
+    assert "ImageWidth >= 3840 Or ImageHeight >= 2160" in vbs_src, (
+        "AutoReport.vbs 缺少 4K 钳制守卫"
+    )
+
+
+def test_no_duplicate_rerun_after_completion(tmp):
+    """二次触发回归 (严重缺陷): 关闭完成弹窗后不得再次拉起生成流程。
+    - GUI: 无全局 <Return> 绑定 (Enter 曾重跑流水线) + 完成后写 gui_run_done.txt
+    - VBS: 拉起 GUI 返回后检测该标记即退出 (外层实例曾整条流水线再跑一遍)"""
+    gui_src = open(os.path.join(ROOT, "config_gui.py"), encoding="utf-8").read()
+    assert 'self.root.bind("<Return>"' not in gui_src, "GUI 仍绑定 Enter 触发生成"
+    assert "on_enter_key" not in gui_src.split("# 注: 不绑定全局")[0], (
+        "on_enter_key 实现未清除"
+    )
+    assert "gui_run_done.txt" in gui_src, "GUI 未写完成标记 gui_run_done.txt"
+    vbs_src = open(
+        os.path.join(ROOT, "AutoReport.vbs"), encoding="gbk", errors="replace"
+    ).read()
+    assert 'gui_run_done.txt' in vbs_src and "WScript.Quit 0" in vbs_src, (
+        "VBS 未完成标记守卫 (外层实例仍会重复生成)"
+    )
+
+
 def main():
     tests = [
         (name, fn)

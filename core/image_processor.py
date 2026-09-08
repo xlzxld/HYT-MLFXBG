@@ -20,6 +20,7 @@ import os
 import re
 import glob
 import json
+import shutil
 import numpy as np
 from PIL import Image, ImageChops, ImageFilter, ImageDraw, ImageFont
 
@@ -97,6 +98,55 @@ def make_transparent_white(img, threshold=245):
     return Image.fromarray(arr)
 
 
+def _left_bar_cutoff(band):
+    """在左侧数据条裁剪带内计算"切断列" x (band 内坐标), 返回 int 或 None。
+
+    背景 (2026-09-08 实机测量, 2112x1136 视口): 固定 340px 裁剪带会混入模型
+    左缘碎片 (band x[200-330) 饱和占比 0.15-0.38), 拼合后贴在画布左端形成
+    与主体分离的月牙碎片 — 即方案 B "图片割裂"的直接来源。
+    实测列分布: 色条 x[55-100) 高饱和; 数值标签 x[100-140) 深色低占比;
+    白隙 x[145-200); 模型碎片 x[200+)。
+
+    算法 (与分辨率无关, 全部按列统计):
+    1) 逐列高饱和像素占比 (max-min>60), 占比>0.12 的连续列带 (允许 <=6px 破洞)
+       中取包含最左命中列的那条 = 色条, 记 bar_left/bar_right;
+    2) 主判据: 自 bar_right 起向右找第一条宽度 >=6px 的近全白列隙
+       (列非白占比<0.02), 隙的左缘即切断点 (保住标签, 切掉碎片);
+    3) 备用: 找不到白隙 → bar_right + max(1.6*色条宽, 30px) 处切断;
+    4) 都不可用 → None (调用方保持原行为, 不静默改变输出)。
+    """
+    arr = np.asarray(band.convert("RGB")).astype(np.int16)
+    sat_cols = ((arr.max(axis=2) - arr.min(axis=2)) > 60).mean(axis=0)
+    nonwhite_cols = (arr.max(axis=2) < 245).mean(axis=0)
+    colored = sat_cols > 0.12
+    if not colored.any():
+        return None
+    first = int(np.argmax(colored))
+    # 含最左命中列的连续带 (允许 <=6px 破洞, 兼容色条内部分段)
+    bar_left, bar_right, gap = first, first, 0
+    for x in range(first, len(colored)):
+        if colored[x]:
+            bar_right = x
+            gap = 0
+        else:
+            gap += 1
+            if gap > 6:
+                break
+    bar_w = bar_right - bar_left + 1
+    # 主判据: 色条右侧第一条近全白列隙 (>=6px) → 隙左缘切断
+    gap_w = max(6, arr.shape[1] // 50)
+    run = 0
+    for x in range(bar_right + 2, arr.shape[1]):
+        if nonwhite_cols[x] < 0.02:
+            run += 1
+            if run >= gap_w:
+                return x - run + 1
+        else:
+            run = 0
+    # 备用: 色条宽的 1.6 倍作为标签余量
+    return min(arr.shape[1], bar_right + max(int(bar_w * 1.6), 30))
+
+
 def extract_viewport_components(viewport_path):
     """
     从 Moldflow 视口抓取图 (如 mode_a/pressure.png) 中提取全要素：
@@ -123,6 +173,16 @@ def extract_viewport_components(viewport_path):
     # 旧框 (50,20,350,…) 曾把标题左缘与顶部切掉 (用户反馈"截图不全")。
     # T8pre 结论仍成立: 保持固定框 (Moldflow 图例铬层为固定逻辑像素)。
     left_crop = im.crop((10, 8, min(w, 340), min(h, 1160)))
+    # 割裂修复 (2026-09-08): 340px 带会混入模型左缘碎片, 拼合后被贴到画布
+    # 左端形成与主体分离的月牙 — 在带内按色条定位 + 白隙切断 (分辨率无关)。
+    band_w = left_crop.width
+    cut_x = _left_bar_cutoff(left_crop)
+    cut_applied = cut_x is not None and cut_x < band_w
+    if cut_applied:
+        print(
+            f"[image_processor] 左侧数据条在 band x={cut_x} 切断模型碎片 (带宽 {band_w})"
+        )
+        left_crop = left_crop.crop((0, 0, cut_x, left_crop.height))
     gray_l = left_crop.convert("L")
     bbox_l = gray_l.point(lambda p: 255 if p < 240 else 0).getbbox()
     left_bar = None
@@ -136,7 +196,8 @@ def extract_viewport_components(viewport_path):
             * (bbox_l[3] - bbox_l[1])
             / (left_crop.width * left_crop.height)
         )
-        if fill > 0.8:
+        # fill>0.8 在切断成功后属正常 (数据条本身致密); 仅切断失败时才可能卷入模型
+        if fill > 0.8 and not cut_applied:
             print(
                 f"[image_processor] WARN: 左侧色带提取填充率 {fill:.0%} 异常偏高, "
                 f"可能卷入模型/水印 (视口 {w}x{h} 偏离设计尺寸 1920x1080?)"
@@ -223,6 +284,111 @@ def generate_solid_cad_model(model_source_path, output_path):
         return False
 
 
+def locate_curve_peak(img, roi_x, roi_y, default_pos):
+    """统一的 XY 曲线峰值定位 (方案 A/B 共用, 逐级降级且每次降级打印原因)。
+
+    背景 (2026-09-08 实机取证): 方案 B 对 model_*.png 先 trim_white_borders
+    再标注, 裁剪后曲线峰顶 (实测 x≈0.145w) 落在按方案 A 视图标定的 ROI
+    (x 起点 0.18) 之外 → 检测不到黑像素 → 回退 default_pos, 探针框浮空。
+
+    降级链:
+    1) 主: 坐标轴框定位 — 最长竖直黑线为 y 轴、最长水平黑线为 x 轴
+       (连线长度 >= 短边 30% 才算), 在轴框内部 (内缩 margin, 天然排除
+       框外左侧/底部的刻度文字与框上方标题) 自上而下取最高黑像素;
+    2) 备: 调用方 ROI 内最高黑像素 (方案 A 视口图原逻辑, 保留兜底);
+    3) 兜底: default_pos。
+    返回 (peak_x, peak_y, method)。
+    """
+    im = img.convert("RGB")
+    w, h = im.size
+    arr = np.array(im)
+    # 曲线/轴线/刻度文字实测为深灰到黑 (灰度 0-130, 纯黑<40 检不到轴线),
+    # 网格线为浅灰 (~203) 不入掩码。
+    gray = np.array(im.convert("L"))
+    dark = gray < 150
+    return _locate_curve_peak_vec(dark, w, h, roi_x, roi_y, default_pos)
+
+
+def _locate_curve_peak_vec(dark, w, h, roi_x, roi_y, default_pos):
+    """locate_curve_peak 的向量化实现 (列/行最长连续黑段 + 框内最高点)。"""
+    min_run = max(8, int(min(w, h) * 0.30))
+
+    def longest_run_profile(mask_2d):
+        """每行/列最长连续 True 段长度与起点 (向量化: 逐行 np.diff 分段)。"""
+        n = mask_2d.shape[0]
+        best_len = np.zeros(n, dtype=np.int64)
+        best_start = np.zeros(n, dtype=np.int64)
+        padded = np.concatenate(
+            [np.zeros((n, 1), dtype=bool), mask_2d, np.zeros((n, 1), dtype=bool)],
+            axis=1,
+        )
+        d = np.diff(padded.astype(np.int8), axis=1)
+        for i in range(n):
+            starts = np.where(d[i] == 1)[0]
+            ends = np.where(d[i] == -1)[0]
+            if len(starts) == 0:
+                continue
+            lens = ends - starts
+            j = int(np.argmax(lens))
+            best_len[i] = lens[j]
+            best_start[i] = starts[j]
+        return best_len, best_start
+
+    # 注意方向: longest_run_profile(m) 返回 m 逐行(沿 axis=1)的最长连续段。
+    # dark 形状为 (h, w): 行内段 = 水平线 → x 轴; dark.T 的行 = 图像列 → y 轴。
+    row_len, row_start = longest_run_profile(dark)  # 水平段 (每行)
+    col_len, col_start = longest_run_profile(dark.T)  # 竖直段 (每列)
+
+    y_axis_x = int(np.argmax(col_len))
+    x_axis_y = int(np.argmax(row_len))
+    if int(col_len[y_axis_x]) < min_run or int(row_len[x_axis_y]) < min_run:
+        print(
+            f"[image_processor] 峰值定位: 轴线检测失败 "
+            f"(竖线最长 {int(col_len.max())}px/横线最长 {int(row_len.max())}px, "
+            f"阈值 {min_run}px), 降级 ROI 扫描"
+        )
+    else:
+        y_top = int(col_start[y_axis_x])
+        # 上边距用 2.5% 图高: Moldflow 标题 (如"锁模力:XY 图")横跨绘图区顶线,
+        # 3px 余量会让标题字底漏进框内被当成峰顶 (2026-09-08 实测 (0.47w,0.06h) 误检)
+        margin = max(3, int(h * 0.025))
+        # 右界 = x 轴线右端: 视口图 x 轴外侧是工具栏图标 (深色小块),
+        # 不限制右界会命中 (0.97w, 0.08h) 的图标像素 (2026-09-08 实测)
+        x_axis_l = int(row_start[x_axis_y])
+        x_axis_r = x_axis_l + int(row_len[x_axis_y])
+        x0, x1 = y_axis_x + margin, x_axis_r - margin
+        y0, y1 = y_top + margin, x_axis_y - margin
+        if x1 > x0 and y1 > y0:
+            frame = dark[y0:y1, x0:x1]
+            if frame.any():
+                # 按行密度剔除文字行: 标题/图例 (如"锁模力:XY 图") 的暗像素数
+                # 远高于曲线本身, 逐行下扫时跳过密集行, 首个"稀疏行"即峰顶所在行
+                # (2026-09-08: 仅靠上边距无法稳定排除横跨绘图区顶线的标题)
+                row_counts = frame.sum(axis=1)
+                dens_thr = max(12, int((x1 - x0) * 0.02))
+                for i, c in enumerate(row_counts):
+                    if c == 0 or c > dens_thr:
+                        continue
+                    xs = np.where(frame[i])[0]
+                    if len(xs):
+                        return x0 + int(xs[0]), y0 + i, "axes-frame"
+        print("[image_processor] 峰值定位: 轴框内无黑像素, 降级 ROI 扫描")
+
+    # 2) ROI 扫描 (方案 A 原逻辑)
+    x_start, x_end = int(roi_x[0] * w), int(roi_x[1] * w)
+    y_start, y_end = int(roi_y[0] * h), int(roi_y[1] * h)
+    if x_end > x_start and y_end > y_start:
+        sub = dark[y_start:y_end, x_start:x_end]
+        ys, xs = np.where(sub)
+        if len(ys) > 0:
+            i = int(np.argmin(ys))
+            return x_start + int(xs[i]), y_start + int(ys[i]), "roi"
+    print("[image_processor] 峰值定位: ROI 内无黑像素, 降级 default_pos")
+
+    # 3) default_pos
+    return int(default_pos[0] * w), int(default_pos[1] * h), "default"
+
+
 def annotate_curve_peak(
     img,
     peak_x_sec,
@@ -251,18 +417,8 @@ def annotate_curve_peak(
     if np.sum(yellow_mask) > 100:
         return im
 
-    # 智能定位峰值拐点
-    black = (arr[:, :, 0] < 40) & (arr[:, :, 1] < 40) & (arr[:, :, 2] < 40)
-    x_start, x_end = int(roi_x[0] * w), int(roi_x[1] * w)
-    y_start, y_end = int(roi_y[0] * h), int(roi_y[1] * h)
-    sub = black[y_start:y_end, x_start:x_end]
-    ys, xs = np.where(sub)
-
-    peak_x, peak_y = int(default_pos[0] * w), int(default_pos[1] * h)
-    if len(ys) > 0:
-        min_y_idx = np.argmin(ys)
-        peak_y = y_start + int(ys[min_y_idx])
-        peak_x = x_start + int(xs[min_y_idx])
+    # 智能定位峰值拐点 (方案 A/B 统一: 轴框定位 → ROI → default_pos 逐级降级)
+    peak_x, peak_y, _method = locate_curve_peak(im, roi_x, roi_y, default_pos)
 
     font_size = max(14, int(h * 0.016))
     f_callout = load_truetype_font(font_size)
@@ -765,17 +921,37 @@ def process_all_mode_b_plots(
                 title_cand.save(ref_title_path)
             break
 
-    # 2. 封面模型本体图 (solid_model.png): VBS 真实导出优先 (图层自适应, 见 AutoReport.vbs 4.1);
-    #    导出缺失或全白时回退灰色重绘 (FUSION 隐藏 T 曾导出全白空图, 实机取证 2026-09-08)
+    # 2. 封面模型本体图 (solid_model.png) 择优:
+    #    首选 VBS「仅亮 CAD 几何图层」导出的 solid_model_cad.png (无网格线,
+    #    2026-09-08 用户裁决, 见 AutoReport.vbs 4.1) → 回退 solid_model.png
+    #    (现行网格自适应导出) → 均空白/缺失时灰色重绘兜底 (FUSION 隐藏 T 曾全白)。
     solid_out = os.path.join(data_dir, "solid_model.png")
-    solid_ok = False
-    if os.path.exists(solid_out):
+    cad_out = os.path.join(data_dir, "solid_model_cad.png")
+
+    def _nonblank(path):
         try:
-            with Image.open(solid_out) as im_s:
-                solid_ok = (np.array(im_s.convert("L")) < 240).mean() > 0.005
+            with Image.open(path) as im_s:
+                return (np.array(im_s.convert("L")) < 240).mean() > 0.005
         except Exception as e:
-            print(f"[image_processor] 读取 solid_model.png 失败: {e}")
-            solid_ok = False
+            print(f"[image_processor] 读取 {os.path.basename(path)} 失败: {e}")
+            return False
+
+    cover_src = None
+    for cand in (cad_out, solid_out):
+        if os.path.exists(cand):
+            if _nonblank(cand):
+                cover_src = cand
+                break
+            print(f"[image_processor] {os.path.basename(cand)} 为空白图, 弃用")
+    if cover_src is not None and os.path.abspath(cover_src) != os.path.abspath(
+        solid_out
+    ):
+        try:
+            shutil.copyfile(cover_src, solid_out)
+            print("[image_processor] 封面选用 CAD 几何图层导出 (solid_model_cad.png)")
+        except OSError as e:
+            print(f"[image_processor] 封面择优复制失败 ({e}), 沿用 solid_model.png")
+    solid_ok = cover_src is not None
     if not solid_ok:
         model_cand = os.path.join(mode_b_dir, "model_pressure.png")
         if not os.path.exists(model_cand):
