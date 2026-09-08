@@ -1546,6 +1546,19 @@ def test_fail_policy_helper_used_in_build(tmp):
     assert "enforce_missing_policy(" in body, "fail 策略仍为内联实现 (C-03)"
 
 
+def test_gui_traces_registered_once(tmp):
+    """C-05/C-04④ 回归 (2026-09-09 体检): 结果项 StringVar/BooleanVar 的
+    trace 只注册一次 — 变量跨 tab 重建持久, populate_tab 每次重建重复
+    trace_add 会累积回调 (默认项在 core 页与分类页各渲染一行更易翻倍);
+    同时清除该处 try/except Exception: pass 裸捕获。"""
+    src = open(os.path.join(ROOT, "config_gui.py"), encoding="utf-8").read()
+    pt = src.split("def populate_tab", 1)[1].split("\n    def ", 1)[0]
+    assert "trace_add" not in pt, "populate_tab 仍每次重建重复挂 trace (C-05)"
+    assert "except Exception" not in pt, "populate_tab 仍存在裸 except (R-3.1)"
+    bpt = src.split("def _build_plot_tabs", 1)[1].split("\n    def ", 1)[0]
+    assert "trace_add" in bpt, "trace 未统一收口到 _build_plot_tabs"
+
+
 def main():
     tests = [
         (name, fn)

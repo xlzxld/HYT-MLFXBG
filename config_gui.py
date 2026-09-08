@@ -235,6 +235,8 @@ class ConfigApp:
             print(f"[Notice] 合并方案结果清单失败: {e}")
         self.plot_vars = {}
         self.slide_vars = {}
+        self._plot_traced = set()
+        self._slide_traced = set()
         self.plot_checkbuttons = {}
         self.plot_label_base = {}
         self.adv_open = False
@@ -534,8 +536,33 @@ class ConfigApp:
             child.destroy()
         plots = self.cfg.get("plots", [])
         for p in plots:
-            if p["key"] not in self.plot_vars:
-                self.plot_vars[p["key"]] = tk.BooleanVar(value=p.get("enabled", False))
+            k = p["key"]
+            if k not in self.plot_vars:
+                self.plot_vars[k] = tk.BooleanVar(value=p.get("enabled", False))
+            current_slide = p.get("slide")
+            slide_str = (
+                str(current_slide)
+                if isinstance(current_slide, int) and current_slide > 0
+                else ""
+            )
+            if k not in self.slide_vars:
+                self.slide_vars[k] = tk.StringVar(value=slide_str)
+            else:
+                # tab 重建时同步最新持久值
+                self.slide_vars[k].set(slide_str)
+            # trace 只在变量生命周期内注册一次: 变量跨 tab 重建持久, 重复
+            # trace_add 会累积回调 (同一 key 在 core 页与分类页各渲染一行,
+            # 更易翻倍) — C-05
+            if k not in self._plot_traced:
+                self.plot_vars[k].trace_add(
+                    "write", lambda *_a, key=k: self._on_slide_or_check_change(key)
+                )
+                self._plot_traced.add(k)
+            if k not in self._slide_traced:
+                self.slide_vars[k].trace_add(
+                    "write", lambda *_a, key=k: self._on_slide_or_check_change(key)
+                )
+                self._slide_traced.add(k)
         for cat_id, cat_title in PLOT_CATEGORIES:
             tab_frame = ttk.Frame(self.notebook, padding="5")
             self.notebook.add(tab_frame, text=cat_title)
@@ -572,18 +599,8 @@ class ConfigApp:
             cb.pack(side=tk.LEFT)
             self.plot_checkbuttons.setdefault(k, []).append(cb)
             # 页码可改 (用户裁决): 所有条目 (含动态备选) 都展示页码编辑入口,
-            # 范围 SLIDE_MIN~SLIDE_MAX (4-32); alt 项默认空, 勾选时 trace 自动分配下一个空页。
-            current_slide_str = (
-                str(slide_no) if isinstance(slide_no, int) and slide_no > 0 else ""
-            )
-            if k not in self.slide_vars:
-                self.slide_vars[k] = tk.StringVar(value=current_slide_str)
-            else:
-                # tab 重建时同步最新持久值
-                self.slide_vars[k].set(current_slide_str)
-            self.slide_vars[k].trace_add(
-                "write", lambda *_a, key=k: self._on_slide_or_check_change(key)
-            )
+            # 范围 SLIDE_MIN~SLIDE_MAX (4-32); 变量与 trace 已在 _build_plot_tabs
+            # 统一创建/注册, 此处只做渲染。
             ttk.Label(row, text="页码").pack(side=tk.LEFT, padx=(10, 2))
             ttk.Spinbox(
                 row,
@@ -597,14 +614,6 @@ class ConfigApp:
                     "%P",
                 ),
             ).pack(side=tk.LEFT)
-            # 勾选框 trace: 备选项刚被勾上时自动填一个未占用的页码
-            if k in self.plot_vars:
-                try:
-                    self.plot_vars[k].trace_add(
-                        "write", lambda *_a, key=k: self._on_slide_or_check_change(key)
-                    )
-                except Exception:
-                    pass
 
     def _on_slide_or_check_change(self, key):
         """页码或勾选状态变化: 同步标签前缀; 备选项被首次勾选时若页码空, 自动分配下一个未占用页码。"""
