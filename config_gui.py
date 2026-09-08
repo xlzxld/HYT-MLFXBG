@@ -343,9 +343,7 @@ class ConfigApp:
         )
         ttk.Label(path_group, text="输出目录:").grid(row=1, column=0, sticky=tk.W)
         # 输出目录留空 = 默认输出到脚本同级目录 (项目根); 相对路径相对项目根解析
-        self.out_var = tk.StringVar(
-            value=self.cfg.get("output_dir") or SCRIPT_DIR
-        )
+        self.out_var = tk.StringVar(value=self.cfg.get("output_dir") or SCRIPT_DIR)
         ttk.Entry(path_group, textvariable=self.out_var).grid(
             row=1, column=1, sticky=tk.EW, padx=5, pady=2
         )
@@ -625,9 +623,7 @@ class ConfigApp:
         self.cfg["template_pptx"] = self.tpl_var.get().strip()
         out_dir = self.out_var.get().strip()
         # 等于脚本目录时存空串, 配置保持可移植 (空 = 项目根, 与 pptx_builder 同规则)
-        if os.path.normcase(os.path.abspath(out_dir)) == os.path.normcase(
-            SCRIPT_DIR
-        ):
+        if os.path.normcase(os.path.abspath(out_dir)) == os.path.normcase(SCRIPT_DIR):
             out_dir = ""
         self.cfg["output_dir"] = out_dir
         self.cfg["open_after_export"] = self.open_var.get()
@@ -711,7 +707,9 @@ class ConfigApp:
         else:
             # 相对路径相对脚本目录解析 (与 core/pptx_builder.resolve_template_path 同规则)
             tpl_abs = (
-                template if os.path.isabs(template) else os.path.join(SCRIPT_DIR, template)
+                template
+                if os.path.isabs(template)
+                else os.path.join(SCRIPT_DIR, template)
             )
             if not os.path.exists(tpl_abs):
                 problems.append(
