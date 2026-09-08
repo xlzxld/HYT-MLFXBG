@@ -760,8 +760,10 @@ def test_legend_source_prefers_viewport(tmp):
 
 
 def test_solid_blank_fallback(tmp):
-    """封面回退回归 (实发事故: FUSION 隐藏 T 层致 VBS 导出全白空图):
-    solid_model.png 全白/缺失时, 必须从 model_pressure.png 重绘兜底。"""
+    """封面回退 (round 2 改写): FUSION 隐藏 T 层致 VBS 导出全白空图时,
+    旧版走灰色 CAD 重绘制兜底 (用户裁决该样式与真实实体不符, 已废弃);
+    新版走 resolve_cover_image 直接选 mode_b/model_pressure.png 等候选直出,
+    全白 + 候选缺失 → 返回 None (调用方登记缺失), 不得臆造任何图。"""
     import numpy as np
     from PIL import Image
 
@@ -770,18 +772,32 @@ def test_solid_blank_fallback(tmp):
     data_dir = tmp
     mode_b = os.path.join(data_dir, "mode_b")
     os.makedirs(mode_b)
-    # 模型图: 白底 + 灰块 (重绘源)
-    md = np.full((300, 400, 3), 255, dtype=np.uint8)
-    md[80:220, 120:280] = (120, 130, 140)
-    Image.fromarray(md).save(os.path.join(mode_b, "model_pressure.png"))
-    # VBS 导出为全白空图
+
+    # 全白 solid_model.png + 无任何 model_*.png 候选 → resolve_cover_image 返回 None
     Image.new("RGB", (640, 360), (255, 255, 255)).save(
         os.path.join(data_dir, "solid_model.png")
     )
+    assert ip.resolve_cover_image(data_dir) is None, (
+        "全白 + 无候选, resolve_cover_image 不得臆造内容"
+    )
 
-    ip.process_all_mode_b_plots(mode_b, data_dir=data_dir)
+    # 提供可用 model_pressure.png 候选 → 应被选中直出并写回 solid_model.png
+    md = np.full((300, 400, 3), 255, dtype=np.uint8)
+    md[80:220, 120:280] = (120, 130, 140)
+    Image.fromarray(md).save(os.path.join(mode_b, "model_pressure.png"))
+    chosen = ip.resolve_cover_image(data_dir)
+    assert chosen, "有候选时 resolve_cover_image 必须返回路径"
+    # solid_model.png 应被候选内容覆写 (不再依赖灰色重绘)
     arr = np.array(Image.open(os.path.join(data_dir, "solid_model.png")).convert("L"))
-    assert (arr < 240).mean() > 0.005, "全白 solid_model 未触发灰色重绘兜底"
+    assert (arr < 240).mean() > 0.005, "命中候选后 solid_model.png 未被正确覆写"
+
+    # 旧 generate_solid_cad_model 已停用, 不得再被 process_all_mode_b_plots 调用
+    import inspect
+
+    src = inspect.getsource(ip.process_all_mode_b_plots)
+    assert "generate_solid_cad_model" not in src, (
+        "process_all_mode_b_plots 仍在调用已废弃的灰色重绘函数"
+    )
 
 
 def test_missing_placeholder_created(tmp):
@@ -1121,6 +1137,183 @@ def test_no_duplicate_rerun_after_completion(tmp):
     assert 'gui_run_done.txt' in vbs_src and "WScript.Quit 0" in vbs_src, (
         "VBS 未完成标记守卫 (外层实例仍会重复生成)"
     )
+
+
+def test_mode_b_width_constraint_no_crop(tmp):
+    """方案 B 拼合 width-only 缩放回归 (2026-09-08 round 2 实发):
+    模型按 height 缩放到可用高度, 还要校验 width 不超过右侧剩余空间, 否则溢出
+    右侧并被裁掉 (模型截图不完整)。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    data_dir = tmp
+    mode_a = os.path.join(data_dir, "mode_a")
+    mode_b = os.path.join(data_dir, "mode_b")
+    os.makedirs(mode_a)
+    os.makedirs(mode_b)
+
+    # 模拟窄高比 (横长方形) 的模型: 1600x600, 宽远大于高
+    # 期望: 在 rem_w 限制下, 模型缩放后宽不应超过剩余空间
+    model = np.full((600, 1600, 3), 255, dtype=np.uint8)
+    model[100:500, 100:1500] = (30, 30, 200)
+    Image.fromarray(model).save(os.path.join(mode_b, "model_pressure.png"))
+
+    # 视口图: 含色条 + 坐标系, 触发完整路径
+    vp = np.full((900, 1600, 3), 255, dtype=np.uint8)
+    vp[50:850, 50:200] = (200, 30, 30)  # 色条
+    vp[800:850, 1200:1450] = 0  # 坐标系
+    Image.fromarray(vp).save(os.path.join(mode_a, "pressure.png"))
+
+    sc = np.full((900, 200, 3), 255, dtype=np.uint8)
+    Image.fromarray(sc).save(os.path.join(mode_b, "scale_pressure.png"))
+
+    out = os.path.join(mode_b, "pressure.png")
+    ok = ip.merge_scale_and_model(
+        os.path.join(mode_b, "scale_pressure.png"),
+        os.path.join(mode_b, "model_pressure.png"),
+        out,
+        viewport_path=os.path.join(mode_a, "pressure.png"),
+        target_height=900,
+    )
+    assert ok
+    arr = np.array(Image.open(out).convert("RGB"))
+    # 拼合画布宽高应约为 1.58:1 (target_height=900 → 1422, 源不足会降级)
+    assert abs(arr.shape[1] / arr.shape[0] - 1.58) < 0.02, (
+        f"画布宽高比异常: {arr.shape}"
+    )
+    # 关键: 模型宽度约束生效, 缩放后宽不应超过 rem_w。
+    # 像素级检测: 模型右缘外的右侧 1% 留白带不应有模型蓝块 (容差 ≤ 2 px 抗噪)。
+    # 注意: 测试图模型本体已贴近右侧边界, 留白带本身为空; 若宽约束失效,
+    # 右端会出现被裁的蓝块 → 检测到溢出。
+    canvas_w = arr.shape[1]
+    right_strip = arr[:, int(canvas_w * 0.99) :]
+    blue_in_right = ((right_strip[:, :, 2] > 120) & (right_strip[:, :, 0] < 100)).sum()
+    # 同时反查 rem_x 计算: lb_w 大约 = scale 高 900 * 0.541 = ~108, rem_w 大约 580-700
+    # 缩放后模型宽度被 rem_w 限制, 最右蓝像素 col 应 < canvas_w * 0.99
+    blue_cols = np.where(((arr[:, :, 2] > 120) & (arr[:, :, 0] < 100)).any(axis=0))[0]
+    if len(blue_cols) > 0:
+        rightmost_blue = int(blue_cols.max())
+        # 允许在最后 1.5% (抗 trim/resize 抗锯齿溢出)
+        assert rightmost_blue <= int(canvas_w * 0.985), (
+            f"模型右缘溢出画布: 最右蓝像素 col={rightmost_blue}, 画布宽={canvas_w} "
+            f"(width-only 缩放未生效, m_w 超出 rem_w 后被 paste 截断)"
+        )
+    assert blue_in_right < 200, (
+        f"模型右侧溢出 (right_strip 蓝色像素 {blue_in_right} 个, 宽度约束未生效)"
+    )
+
+
+def test_resolve_cover_image_priority(tmp):
+    """封面直出优先级 (用户裁决 2026-09-08 round 2): 优先 mode_b/model_pressure.png
+    → mode_b/model_volumetric_shrinkage.png → solid_model.png;
+    命中后裁白边写回 (返回路径恒为 solid_model.png, 内容来自最佳候选)。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+    from core.image_processor import _model_image_usable as _usable
+
+    mode_b = os.path.join(tmp, "mode_b")
+    os.makedirs(mode_b)
+    fallback = os.path.join(tmp, "solid_model.png")
+
+    def _non_blank_content(path):
+        """检查路径对应图非空白 (>=0.5% 暗像素), 用于确认 resolve_cover_image
+        选中的候选确实有内容被写回 fallback。"""
+        with Image.open(path) as im:
+            arr = np.array(im.convert("L"))
+        return (arr < 240).mean() > 0.005
+
+    # 缺省三个候选都缺失 → 返回 None
+    assert ip.resolve_cover_image(tmp) is None
+
+    # 仅 solid_model.png 存在 (有内容) → 命中, 返回 fallback 路径
+    sm = np.full((400, 600, 3), 255, dtype=np.uint8)
+    sm[100:300, 200:400] = (30, 30, 200)
+    Image.fromarray(sm).save(fallback)
+    chosen = ip.resolve_cover_image(tmp)
+    assert chosen and os.path.normcase(chosen) == os.path.normcase(fallback)
+    assert _non_blank_content(chosen)
+
+    # mode_b/model_pressure.png 也存在且可用 → 应优先选它 (内容写回 fallback)
+    # 先把 fallback 设成全白, 然后看它是否被 model_pressure 的内容覆盖
+    Image.fromarray(np.full((400, 600, 3), 255, dtype=np.uint8)).save(fallback)
+    mp = np.full((500, 700, 3), 255, dtype=np.uint8)
+    mp[100:400, 200:500] = (60, 60, 200)  # 蓝色块
+    Image.fromarray(mp).save(os.path.join(mode_b, "model_pressure.png"))
+    chosen2 = ip.resolve_cover_image(tmp)
+    assert chosen2 and os.path.normcase(chosen2) == os.path.normcase(fallback)
+    # fallback 应被 model_pressure 覆写, 内容非白
+    assert _non_blank_content(fallback), (
+        "model_pressure.png 应被优先选中并写回 fallback, 但 fallback 仍为空白"
+    )
+    # 与原始 model_pressure 的 _model_image_usable 判据一致
+    ok, _ = _usable(os.path.join(mode_b, "model_pressure.png"))
+    assert ok, "model_pressure.png 自身应被判为可用"
+
+    # 候选全白 (残缺) → 降级, 最终无内容返回 None
+    Image.fromarray(np.full((400, 600, 3), 255, dtype=np.uint8)).save(
+        os.path.join(mode_b, "model_pressure.png")
+    )
+    Image.fromarray(np.full((400, 600, 3), 255, dtype=np.uint8)).save(fallback)
+    assert ip.resolve_cover_image(tmp) is None
+
+    # model_volumetric_shrinkage 命中 → 应被选中 (作为 model_pressure 失效的降级)
+    vs = np.full((400, 600, 3), 255, dtype=np.uint8)
+    vs[100:300, 200:400] = (60, 200, 30)  # 绿色块
+    Image.fromarray(vs).save(os.path.join(mode_b, "model_volumetric_shrinkage.png"))
+    chosen3 = ip.resolve_cover_image(tmp)
+    assert chosen3 and os.path.normcase(chosen3) == os.path.normcase(fallback)
+    assert _non_blank_content(fallback), (
+        "model_volumetric_shrinkage 应被选中作为降级, 但 fallback 内容未生效"
+    )
+
+
+def test_pptx_cover_uses_resolve_cover_image(tmp):
+    """封面构建代码静态断言 (round 2): 必须调用 resolve_cover_image, 不再直接
+    写死 solid_model.png (后者会被 Moldflow 图层隐藏场景下导出空图覆盖)。"""
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    assert "resolve_cover_image(data_dir)" in src, (
+        "build_single_report 封面段未调用 resolve_cover_image"
+    )
+
+
+def test_warp_page_stripping_block_removed(tmp):
+    """warp 页剥离块已删除 (用户裁决 2026-09-08): 模板图片已手动清空, 运行时
+    不再剥离; PPT 14-16 页保持模板自身内容。"""
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    assert "[13, 14, 15]" not in src, (
+        "warp 页图片剥离块残留 (用户已手动清空, 运行时不得再剥离)"
+    )
+    assert "Removed picture shape" not in src, "warp 页剥离日志残留"
+
+
+def test_default_plot_keys_whitelist(tmp):
+    """默认常用项白名单 (round 2): 共 10 项, 不含 warp_x/y/z (默认报告聚焦全部效应)。"""
+    import config_gui
+
+    assert len(config_gui.DEFAULT_PLOT_KEYS) == 10, (
+        f"DEFAULT_PLOT_KEYS 应为 10 项: got {len(config_gui.DEFAULT_PLOT_KEYS)}"
+    )
+    for must in (
+        "filling_animation",
+        "pressure",
+        "vp_switch_pressure",
+        "inj_pressure_xy",
+        "flow_front_temp",
+        "clamp_force_xy",
+        "weld_lines",
+        "volumetric_shrinkage",
+        "sink_marks",
+        "warpage_all",
+    ):
+        assert must in config_gui.DEFAULT_PLOT_KEYS, f"缺失默认项: {must}"
+    for forbid in ("warpage_x", "warpage_y", "warpage_z"):
+        assert forbid not in config_gui.DEFAULT_PLOT_KEYS, (
+            f"XYZ 分向变形不应在默认白名单: {forbid}"
+        )
 
 
 def main():
