@@ -57,15 +57,29 @@ def check_config(config_path):
             cfg = json.load(f)
     except Exception as e:
         return [f"配置文件损坏 ({config_path}): {e} → 修正 JSON 语法"], []
-    for key in ("template_pptx", "output_dir"):
-        if not cfg.get(key):
-            problems.append(f"配置缺少 {key} → 在 config_gui.py 中填写")
+    if not cfg.get("template_pptx"):
+        problems.append(
+            "配置缺少 template_pptx → 在 templates/ 放置模板并在配置中填写相对路径"
+        )
+    # output_dir 允许为空: 空值 = 默认输出到脚本同级目录 (项目根), 由 pptx_builder 解析
+    if not cfg.get("output_dir"):
+        infos.append("output_dir 为空 → 报告默认输出到脚本同级目录 (项目根)")
     infos.append(f"配置文件 OK: {config_path}")
     return problems, infos
 
 
+def resolve_template_path(template_path):
+    """模板相对路径 → 相对本项目根的绝对路径 (与 core/pptx_builder 同规则)。"""
+    if not template_path:
+        return template_path
+    if os.path.isabs(str(template_path)):
+        return template_path
+    return os.path.join(REPO_ROOT, template_path)
+
+
 def check_template(template_path):
     problems, infos = [], []
+    template_path = resolve_template_path(template_path)
     if not template_path or not os.path.exists(template_path):
         return (
             [

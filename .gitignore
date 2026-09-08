@@ -7,7 +7,10 @@ temp/
 /temp/
 
 # 2. 生成的大体积 PowerPoint 报告文件 (*.pptx)
+# 例外: templates/ 下的模板文件必须入库 (可移植性契约, 配置以相对路径引用)
 *.pptx
+!templates/
+!templates/*.pptx
 
 # 3. Python 字节码与缓存
 __pycache__/
@@ -30,5 +33,6 @@ Desktop.ini
 # 6. 编辑器与 IDE 配置
 .vscode/
 .idea/
+.zcode/
 *.sublime-project
 *.sublime-workspace

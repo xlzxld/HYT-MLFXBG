@@ -33,6 +33,40 @@ except ImportError:
         trim_white_borders = None
         load_truetype_font = None
 
+# 项目根 = core/ 的父目录 (与 config_gui.py / AutoReport.vbs 同级)。
+# 所有相对路径 (模板/输出/数据目录) 一律相对项目根解析, 保证整目录拷贝到任何机器可运行。
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def resolve_template_path(value, project_root=PROJECT_ROOT):
+    """解析模板 PPTX 路径: 绝对路径原样; 相对路径相对项目根拼接。
+
+    解析后不存在 → 抛 FileNotFoundError (带实际尝试路径, 绝不静默回退)。
+    """
+    if not value:
+        raise FileNotFoundError("template_pptx 配置为空, 未指定模板文件")
+    candidate = str(value)
+    if not os.path.isabs(candidate):
+        candidate = os.path.join(project_root, candidate)
+    if not os.path.exists(candidate):
+        raise FileNotFoundError(f"Template PPTX not found at: {candidate}")
+    return candidate
+
+
+def resolve_output_dir(value, project_root=PROJECT_ROOT):
+    """解析输出目录: 空/非法 → 项目根 (脚本同级目录); 相对路径 → 相对项目根。
+
+    返回前确保目录存在 (makedirs), 失败异常上抛。
+    """
+    out_dir = str(value).strip() if value else ""
+    if not out_dir:
+        out_dir = project_root
+    elif not os.path.isabs(out_dir):
+        out_dir = os.path.join(project_root, out_dir)
+    os.makedirs(out_dir, exist_ok=True)
+    return out_dir
+
+
 # 数据缺失的统一呈现：宁可明确标注，绝不用任何 fabricated 默认值充数
 MISSING_TEXT = "数据缺失"
 MESH_SHORT = "—"
@@ -1496,12 +1530,9 @@ def build_single_report(
                     f"[Extra Slide][{mode_tag}] Added new slide for: {p_cfg.get('plot_name', key)}"
                 )
 
-    # 确定输出路径
+    # 确定输出路径 (默认 = 本脚本所在项目的同级目录, 即项目根; 相对路径相对项目根)
     if not output_path:
-        out_dir = config.get("output_dir")
-        if not out_dir:
-            out_dir = os.path.abspath(".")
-        os.makedirs(out_dir, exist_ok=True)
+        out_dir = resolve_output_dir(config.get("output_dir"))
         filename = f"{study_name}-{today_str}-模流分析报告-{mode_tag}.pptx"
         output_path = os.path.join(out_dir, filename)
 
@@ -1544,9 +1575,8 @@ def build_report(config_path, data_dir, output_path=None, mode=None, no_open=Fal
         mode = config.get("screenshot_mode", "B")
     mode = str(mode).upper().strip()
 
-    template_path = config.get("template_pptx")
-    if not os.path.exists(template_path):
-        raise FileNotFoundError(f"Template PPTX not found at: {template_path}")
+    # 模板路径: 相对路径相对项目根解析 (templates/xxx.pptx), 绝对路径原样
+    template_path = resolve_template_path(config.get("template_pptx"))
 
     # T26: 模板哈希校验 — 布局几何 (SLIDE_SAFE_BOXES/标记文字) 钉死在特定模板上,
     # 模板被更换/修订时提前告警, 防止布局静默错乱

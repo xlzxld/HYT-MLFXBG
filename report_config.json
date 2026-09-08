@@ -1,6 +1,6 @@
 {
-  "template_pptx": "C:\\Users\\5600\\Documents\\MLFX Report\\26\\09\\09.02\\box-4-1-09001-20260902-模流分析报告.pptx",
-  "output_dir": "c:\\Users\\5600\\Documents\\ZDH\\MLFXBG",
+  "template_pptx": "templates/Moldflow报告模板.pptx",
+  "output_dir": "",
   "open_after_export": true,
   "show_gui_before_run": true,
   "screenshot_mode": "BOTH",
@@ -147,7 +147,7 @@
       "type": "image",
       "key": "warpage_x",
       "plot_name": "变形，所有效应:X 方向",
-      "enabled": false,
+      "enabled": true,
       "desc": "★ 变形: 所有效应: X 方向"
     },
     {
@@ -159,7 +159,7 @@
       "type": "image",
       "key": "warpage_y",
       "plot_name": "变形，所有效应:Y 方向",
-      "enabled": false,
+      "enabled": true,
       "desc": "★ 变形: 所有效应: Y 方向"
     },
     {
@@ -171,7 +171,7 @@
       "type": "image",
       "key": "warpage_z",
       "plot_name": "变形，所有效应:Z 方向",
-      "enabled": false,
+      "enabled": true,
       "desc": "★ 变形: 所有效应: Z 方向 (垂直视角)",
       "view_settings": {
         "rotation": [
