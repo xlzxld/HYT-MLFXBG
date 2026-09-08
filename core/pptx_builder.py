@@ -553,6 +553,32 @@ SLIDE_SAFE_BOXES = {
     16: (Inches(0.12), Inches(0.55), Inches(9.76), Inches(6.70), False),
 }
 
+# Slide 3 材料四联图象限定义 (顺序对应 material_basic/process/viscosity/pvt)。
+# 阈值 4500000/3500000 EMU 沿用模板四联图的历史分界; 插入框按阈值分区再内缩边距,
+# 仅在对应象限没有任何既有图片形状时用于 add_picture。
+MATERIAL_QUADRANT_KEYS = (
+    "material_basic",
+    "material_process",
+    "material_viscosity",
+    "material_pvt",
+)
+MATERIAL_QUADRANT_LABELS = ("材料基本信息", "推荐工艺", "粘度曲线", "PVT 曲线")
+MATERIAL_QUADRANT_X_SPLIT = 4500000
+MATERIAL_QUADRANT_Y_SPLIT = 3500000
+MATERIAL_QUADRANT_BOXES = (
+    (150000, 400000, 4200000, 2950000),  # 左上
+    (4650000, 400000, 4300000, 2950000),  # 右上
+    (150000, 3650000, 4200000, 3000000),  # 左下
+    (4650000, 3650000, 4300000, 3000000),  # 右下
+)
+
+
+def material_quadrant_index(x, y):
+    """按形状左上角坐标判定 Slide 3 四联图象限 (0=左上 1=右上 2=左下 3=右下)。"""
+    if y < MATERIAL_QUADRANT_Y_SPLIT:
+        return 0 if x < MATERIAL_QUADRANT_X_SPLIT else 1
+    return 2 if x < MATERIAL_QUADRANT_X_SPLIT else 3
+
 
 def _encode_matching_format(new_image_path, target_ext):
     """按目标部件扩展名编码图片字节, 杜绝 'png 部件装 JPEG 字节' 的格式错配
@@ -636,6 +662,26 @@ def prepare_cover_jpeg(solid_img):
     return jpg_path
 
 
+def compute_safe_box_fit(new_image_path, box_left, box_top, box_w, box_h):
+    """计算图片等比适配安全框并居中的几何 (left, top, width, height)。
+    1. 用 PIL 获取图片物理分辨率, scale = min(box_w/img_w, box_h/img_h) 严格锁定
+       原生宽高比, 杜绝挤压变形; 计算结果居中于安全框内。
+    2. 读图失败返回 None (调用方自行决定回退策略)。
+    """
+    try:
+        with Image.open(new_image_path) as im:
+            img_w, img_h = im.size
+    except Exception as e:
+        print(f"[Warning] Failed to read image size for {new_image_path}: {e}")
+        return None
+    scale = min(float(box_w) / float(img_w), float(box_h) / float(img_h))
+    target_w = int(img_w * scale)
+    target_h = int(img_h * scale)
+    target_left = int(box_left + (box_w - target_w) / 2)
+    target_top = int(box_top + (box_h - target_h) / 2)
+    return target_left, target_top, target_w, target_h
+
+
 def fit_picture_in_safe_box(
     slide,
     pic_shape,
@@ -647,39 +693,19 @@ def fit_picture_in_safe_box(
     allow_cover_title=False,
 ):
     """
-    自适应安全边界等比放大放置图片：
-    1. 使用 PIL 获取图片物理分辨率 (img_w, img_h)，严格锁定原生宽高比，杜绝挤压变形。
-    2. 计算最大等比缩放因子 scale = min(box_w / img_w, box_h / img_h)。
-    3. 居中对齐放置在安全框内：
-       target_w = int(img_w * scale)
-       target_h = int(img_h * scale)
-       target_left = int(box_left + (box_w - target_w) / 2)
-       target_top = int(box_top + (box_h - target_h) / 2)
-    4. 动态更新 pic_shape.left, pic_shape.top, pic_shape.width, pic_shape.height。
-    5. 调用 replace_picture_blob 替换图片数据。
+    自适应安全边界等比放大放置图片（几何由 compute_safe_box_fit 计算）：
+    动态更新 pic_shape.left, pic_shape.top, pic_shape.width, pic_shape.height,
+    再调用 replace_picture_blob 替换图片数据。
     注意：严格保留右上角标题文本框文字，绝不进行清空处理（允许图片自然覆盖或在旁展示）。
     """
     if not os.path.exists(new_image_path):
         return False
 
-    try:
-        with Image.open(new_image_path) as im:
-            img_w, img_h = im.size
-    except Exception as e:
-        print(f"[Warning] Failed to read image size for {new_image_path}: {e}")
+    geom = compute_safe_box_fit(new_image_path, box_left, box_top, box_w, box_h)
+    if geom is None:
         return replace_picture_blob(pic_shape, new_image_path)
 
-    # 严格保持图片原生纵横比，计算最大缩放尺寸
-    scale = min(float(box_w) / float(img_w), float(box_h) / float(img_h))
-    target_w = int(img_w * scale)
-    target_h = int(img_h * scale)
-    target_left = int(box_left + (box_w - target_w) / 2)
-    target_top = int(box_top + (box_h - target_h) / 2)
-
-    pic_shape.left = target_left
-    pic_shape.top = target_top
-    pic_shape.width = target_w
-    pic_shape.height = target_h
+    pic_shape.left, pic_shape.top, pic_shape.width, pic_shape.height = geom
 
     # 替换图像二进制
     replace_picture_blob(pic_shape, new_image_path)
@@ -696,6 +722,44 @@ def get_main_picture(slide):
     # 面积从大到小排序
     pics.sort(key=lambda s: s.width * s.height, reverse=True)
     return pics[0]
+
+
+def insert_or_replace_picture(
+    slide,
+    new_image_path,
+    box_left,
+    box_top,
+    box_w,
+    box_h,
+    allow_cover_title=False,
+    log_tag="",
+):
+    """把结果图放到页面上：页面已有图片 → 替换面积最大的主图 (保留模板布局);
+    页面无任何图片形状 → 按安全框等比居中插入新图。
+    模板图片被用户清空时同样出图, 不再静默丢图 (清空模板导出无图回归)。
+    返回 False 仅当图片放置失败 (文件缺失/读图失败), 供调用方登记缺失。
+    """
+    main_pic = get_main_picture(slide)
+    if main_pic is not None:
+        return fit_picture_in_safe_box(
+            slide,
+            main_pic,
+            new_image_path,
+            box_left,
+            box_top,
+            box_w,
+            box_h,
+            allow_cover_title,
+        )
+    geom = compute_safe_box_fit(new_image_path, box_left, box_top, box_w, box_h)
+    if geom is None:
+        return False
+    slide.shapes.add_picture(new_image_path, *geom)
+    print(
+        f"{log_tag} 页面无图片形状, 已按安全框插入新图: "
+        f"{os.path.basename(new_image_path)}"
+    )
+    return True
 
 
 def update_table_cell(cell, text, font_name="微软雅黑", font_size_pt=12):
@@ -1216,18 +1280,16 @@ def build_single_report(
                 solid_img = prepare_cover_jpeg(solid_img)
             except Exception as e:
                 print(f"[Notice] 封面 JPEG 转换跳过 (沿用 PNG): {e}")
-            main_pic = get_main_picture(s1)
-            if main_pic is not None:
-                b_l, b_t, b_w, b_h, _ = SLIDE_SAFE_BOXES.get(
-                    1,
-                    (Inches(2.00), Inches(0.50), Inches(6.00), Inches(4.45), False),
-                )
-                fit_picture_in_safe_box(s1, main_pic, solid_img, b_l, b_t, b_w, b_h)
+            b_l, b_t, b_w, b_h, _ = SLIDE_SAFE_BOXES.get(
+                1,
+                (Inches(2.00), Inches(0.50), Inches(6.00), Inches(4.45), False),
+            )
+            if insert_or_replace_picture(s1, solid_img, b_l, b_t, b_w, b_h):
                 print(
                     f"[Slide 1] Replaced cover model with pure CAD solid body (无网格、无节点): {os.path.basename(solid_img)}"
                 )
             else:
-                record_missing("封面模型图: 第 1 页未找到可替换的图片形状")
+                record_missing("封面模型图: 第 1 页放置封面图失败")
         else:
             record_missing(
                 "封面模型图: solid_model.png 缺失 (VBS 导出失败且无重绘兜底)"
@@ -1256,15 +1318,15 @@ def build_single_report(
                 except Exception as e:
                     print(f"[Notice] Error trimming mesh model: {e}")
 
-            main_pic = get_main_picture(s2)
-            if main_pic:
-                b_l, b_t, b_w, b_h, _ = SLIDE_SAFE_BOXES.get(
-                    2, (Inches(0.20), Inches(1.35), Inches(5.10), Inches(5.15), False)
-                )
-                fit_picture_in_safe_box(s2, main_pic, mesh_img, b_l, b_t, b_w, b_h)
-                print(
-                    "[Slide 2] Updated mesh model with proportional safe-box scaling and white border trimming."
-                )
+            b_l, b_t, b_w, b_h, _ = SLIDE_SAFE_BOXES.get(
+                2, (Inches(0.20), Inches(1.35), Inches(5.10), Inches(5.15), False)
+            )
+            insert_or_replace_picture(
+                s2, mesh_img, b_l, b_t, b_w, b_h, log_tag="[Slide 2]"
+            )
+            print(
+                "[Slide 2] Updated mesh model with proportional safe-box scaling and white border trimming."
+            )
 
         # 替换右侧网格统计数据（严格保留模板原生空行排版与坐标，Arial 8pt，空行分明，杜绝挤压）
         formatted_lines, mesh_missing = get_formatted_mesh_text(data_dir)
@@ -1285,45 +1347,32 @@ def build_single_report(
     if total_slides >= 3:
         s3 = prs.slides[2]
         ph_path = None
+        # 按象限归集既有图片 (每象限取第一张); 无图的象限稍后按象限框插入新图,
+        # 模板四联图被清空时同样出图
+        quadrant_pics = {}
         for shape in s3.shapes:
             if shape.shape_type == MSO_SHAPE_TYPE.PICTURE:
-                x = shape.left
-                y = shape.top
-                # 左上: 材料基本信息
-                if x < 4500000 and y < 3500000:
-                    mat_img, mat_key = (
-                        os.path.join(data_dir, "material_basic.png"),
-                        "材料基本信息",
-                    )
-                # 右上: 推荐工艺
-                elif x >= 4500000 and y < 3500000:
-                    mat_img, mat_key = (
-                        os.path.join(data_dir, "material_process.png"),
-                        "推荐工艺",
-                    )
-                # 左下: 粘度曲线
-                elif x < 4500000 and y >= 3500000:
-                    mat_img, mat_key = (
-                        os.path.join(data_dir, "material_viscosity.png"),
-                        "粘度曲线",
-                    )
-                # 右下: PVT 曲线
-                else:
-                    mat_img, mat_key = (
-                        os.path.join(data_dir, "material_pvt.png"),
-                        "PVT 曲线",
-                    )
-                if os.path.exists(mat_img):
-                    replace_picture_blob(shape, mat_img)
-                else:
-                    # 缺图: 占位替换, 绝不让模板里上个产品的材料图混入
-                    if ph_path is None:
-                        ph_path = ensure_missing_plot_placeholder(data_dir)
-                    record_missing(f"材料图缺失: {mat_key}")
-                    print(
-                        f"[Slide 3][ERROR] Image not found for {mat_key}, 使用缺失占位图"
-                    )
-                    replace_picture_blob(shape, ph_path)
+                q = material_quadrant_index(shape.left, shape.top)
+                if q not in quadrant_pics:
+                    quadrant_pics[q] = shape
+        for q, key in enumerate(MATERIAL_QUADRANT_KEYS):
+            mat_img = os.path.join(data_dir, f"{key}.png")
+            pic = quadrant_pics.get(q)
+            if not os.path.exists(mat_img):
+                # 缺图: 占位替换, 绝不让模板里上个产品的材料图混入
+                if ph_path is None:
+                    ph_path = ensure_missing_plot_placeholder(data_dir)
+                record_missing(f"材料图缺失: {MATERIAL_QUADRANT_LABELS[q]}")
+                print(
+                    f"[Slide 3][ERROR] Image not found for {MATERIAL_QUADRANT_LABELS[q]}, 使用缺失占位图"
+                )
+                mat_img = ph_path
+            if pic is not None:
+                replace_picture_blob(pic, mat_img)
+            else:
+                b_l, b_t, b_w, b_h = MATERIAL_QUADRANT_BOXES[q]
+                geom = compute_safe_box_fit(mat_img, b_l, b_t, b_w, b_h)
+                s3.shapes.add_picture(mat_img, *(geom or (b_l, b_t, b_w, b_h)))
         print(
             "[Slide 3] Updated Material 4-panel figures (基本属性、推荐工艺、粘度、PVT 四图全部精准替换)."
         )
@@ -1386,16 +1435,23 @@ def build_single_report(
                 except Exception as e:
                     print(f"[Notice] GIF optimization skipped: {e}")
 
-                main_pic = get_main_picture(slide)
-                if main_pic:
-                    fit_picture_in_safe_box(
-                        slide, main_pic, gif_path, b_l, b_t, b_w, b_h, allow_cover_title
-                    )
+                if insert_or_replace_picture(
+                    slide,
+                    gif_path,
+                    b_l,
+                    b_t,
+                    b_w,
+                    b_h,
+                    allow_cover_title,
+                    log_tag=f"[Slide {slide_no}]",
+                ):
                     print(
                         f"[Slide {slide_no}] Updated GIF animation with safe-box fitting: {os.path.basename(gif_path)}"
                     )
                 else:
-                    record_missing(f"充填动画占位失败: {key} (第 {slide_no} 页无主图)")
+                    record_missing(
+                        f"充填动画占位失败: {key} (第 {slide_no} 页放置失败)"
+                    )
 
                 # 锁定用户微调后的 Shift+F5 播放提示文本框位置，并置于顶层杜绝遮挡
                 for shape in slide.shapes:
@@ -1425,12 +1481,17 @@ def build_single_report(
                 print(
                     f"[Slide {slide_no}][ERROR] GIF not found for {key}, 使用缺失占位图"
                 )
-                main_pic = get_main_picture(slide)
-                if main_pic:
-                    ph = ensure_missing_plot_placeholder(data_dir)
-                    fit_picture_in_safe_box(
-                        slide, main_pic, ph, b_l, b_t, b_w, b_h, allow_cover_title
-                    )
+                ph = ensure_missing_plot_placeholder(data_dir)
+                insert_or_replace_picture(
+                    slide,
+                    ph,
+                    b_l,
+                    b_t,
+                    b_w,
+                    b_h,
+                    allow_cover_title,
+                    log_tag=f"[Slide {slide_no}]",
+                )
         else:
             # 普通云图图片 (Slide 5 ~ 16)
             # 优先从该模式专属子目录寻找
@@ -1447,29 +1508,39 @@ def build_single_report(
                         img_path = cand_root
 
             if os.path.exists(img_path):
-                main_pic = get_main_picture(slide)
-                if main_pic:
-                    fit_picture_in_safe_box(
-                        slide, main_pic, img_path, b_l, b_t, b_w, b_h, allow_cover_title
-                    )
-                    tag_info = (
-                        "极限全屏覆盖标题" if allow_cover_title else "自适应安全最大化"
-                    )
-                    print(
-                        f"[Slide {slide_no}][{mode_tag}] Updated result plot: {p_cfg.get('desc', key)} ({tag_info})"
-                    )
+                insert_or_replace_picture(
+                    slide,
+                    img_path,
+                    b_l,
+                    b_t,
+                    b_w,
+                    b_h,
+                    allow_cover_title,
+                    log_tag=f"[Slide {slide_no}][{mode_tag}]",
+                )
+                tag_info = (
+                    "极限全屏覆盖标题" if allow_cover_title else "自适应安全最大化"
+                )
+                print(
+                    f"[Slide {slide_no}][{mode_tag}] Updated result plot: {p_cfg.get('desc', key)} ({tag_info})"
+                )
             else:
                 # 缺图: 用占位图替换模板旧图 (模板是填好的历史报告, 旧图=上个零件的云图)
                 record_missing(f"结果图缺失: {key} (第 {slide_no} 页)")
                 print(
                     f"[Slide {slide_no}][ERROR] Image not found for {key} in {mode_dir}, 使用缺失占位图"
                 )
-                main_pic = get_main_picture(slide)
-                if main_pic:
-                    ph = ensure_missing_plot_placeholder(data_dir)
-                    fit_picture_in_safe_box(
-                        slide, main_pic, ph, b_l, b_t, b_w, b_h, allow_cover_title
-                    )
+                ph = ensure_missing_plot_placeholder(data_dir)
+                insert_or_replace_picture(
+                    slide,
+                    ph,
+                    b_l,
+                    b_t,
+                    b_w,
+                    b_h,
+                    allow_cover_title,
+                    log_tag=f"[Slide {slide_no}]",
+                )
 
         # Slide 9: 自动回填注塑机最大锁模力与 CAE 最大锁模力
         if slide_no == 9:
