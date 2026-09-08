@@ -553,11 +553,11 @@ SLIDE_SAFE_BOXES = {
     8: (Inches(0.12), Inches(0.55), Inches(9.76), Inches(5.55), False),
     # 9: 锁模力:XY 图 (满幅放置，物理覆盖右上角标题，但绝不删除标题文本)
     9: (Inches(0.12), Inches(0.12), Inches(9.76), Inches(6.53), True),
-    # 10: 熔接痕 (避让底部表格 top=6.69)
+    # 10: 熔接线 (避让底部表格 top=6.69)
     10: (Inches(0.12), Inches(0.55), Inches(9.76), Inches(6.10), False),
-    # 11: 气穴 (避让底部表格 top=6.69)
+    # 11: 体积收缩率 (避让底部表格 top=6.69)
     11: (Inches(0.12), Inches(0.55), Inches(9.76), Inches(6.10), False),
-    # 12: 体积收缩率 (避让底部表格 top=6.69)
+    # 12: 缩痕估算 (避让底部表格 top=6.69)
     12: (Inches(0.12), Inches(0.55), Inches(9.76), Inches(6.10), False),
     # 13: 变形，所有效应:变形 (跟随自适应算法，与 14~16 保持一致)
     13: (Inches(0.12), Inches(0.55), Inches(9.76), Inches(6.70), False),
