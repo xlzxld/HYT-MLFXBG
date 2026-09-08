@@ -211,6 +211,9 @@ class ConfigApp:
             self.style.theme_use("vista")
         except Exception:
             pass
+        # 未命中方案的行灰显: ttk.Checkbutton 无 foreground 选项 (直配即 TclError
+        # "unknown option"), 只能经 style 着色; 主题不支持颜色时退化为仅文字后缀提示。
+        self.style.configure("PlotMiss.TCheckbutton", foreground="#b0b0b0")
 
         self.cfg, cfg_err = load_config()
         if cfg_err:
@@ -1006,6 +1009,17 @@ class ConfigApp:
             result["error"] = str(e)
         self.root.after(0, lambda: self.apply_available_plots(result))
 
+    def _set_plot_hit_labels(self, key, hit):
+        """按方案命中结果更新结果项行: 命中恢复原文案, 未命中加灰显后缀。
+        只配 text 与 style — ttk.Checkbutton 没有 foreground 选项,
+        经 style 着色, 直配颜色属性即崩 (TclError unknown option 回归)。"""
+        base = self.plot_label_base.get(key, "")
+        text = base if hit else f"{base}   （方案中未找到）"
+        style = "TCheckbutton" if hit else "PlotMiss.TCheckbutton"
+        for w in self.plot_checkbuttons.get(key, []):
+            w.configure(text=text)
+            w.configure(style=style)
+
     def apply_available_plots(self, result):
         """方案结果清单应用到界面: 默认常用项按精确名匹配, 命中才勾选 (用户裁决:
         动态列表 + 不猜测)。备选项保持现状; 匹配不上的行灰显提示。
@@ -1043,25 +1057,14 @@ class ConfigApp:
             k = p.get("key")
             hit = matched.get(k, False)
             self.plot_vars[k].set(hit)
-            base = self.plot_label_base.get(k, "")
-            for w in self.plot_checkbuttons.get(k, []):
-                w.configure(
-                    text=base if hit else f"{base}   （方案中未找到）",
-                    foreground=None if hit else "#b0b0b0",
-                )
+            self._set_plot_hit_labels(k, hit)
         # 其余条目 (含动态合并项): 不改勾选状态, 仅标注在方案中是否存在
         default_keys = {p.get("key") for p in default_plots}
         for p in self.cfg.get("plots", []):
             k = p.get("key")
             if k in default_keys or k not in self.plot_vars:
                 continue
-            hit = matched.get(k, False)
-            base = self.plot_label_base.get(k, "")
-            for w in self.plot_checkbuttons.get(k, []):
-                w.configure(
-                    text=f"{base}   （方案中未找到）" if not hit else base,
-                    foreground=None if hit else "#b0b0b0",
-                )
+            self._set_plot_hit_labels(k, matched.get(k, False))
 
     def open_log(self):
         if os.path.exists(RUN_LOG):
