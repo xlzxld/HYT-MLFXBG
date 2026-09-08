@@ -1,0 +1,238 @@
+{
+  "template_pptx": "C:\\Users\\5600\\Documents\\MLFX Report\\26\\09\\09.02\\box-4-1-09001-20260902-模流分析报告.pptx",
+  "output_dir": "c:\\Users\\5600\\Documents\\ZDH\\MLFXBG",
+  "open_after_export": true,
+  "show_gui_before_run": true,
+  "screenshot_mode": "BOTH",
+  "image_settings": {
+    "width": 0,
+    "height": 0,
+    "keep_view": true,
+    "hide_axis": false,
+    "plot_legend": true,
+    "plot_plot_info": true
+  },
+  "animation_settings": {
+    "frames": 60,
+    "delay_ms": 80,
+    "optimize_gif": true
+  },
+  "plots": [
+    {
+      "slide": 4,
+      "category": "flow",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "gif",
+      "key": "filling_animation",
+      "plot_name": "充填时间",
+      "enabled": true,
+      "desc": "★ 动态充填动画 (GIF 动图)"
+    },
+    {
+      "slide": 5,
+      "category": "flow",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "pressure",
+      "plot_name": "压力",
+      "enabled": true,
+      "desc": "★ 充填结束时的压力"
+    },
+    {
+      "slide": 6,
+      "category": "flow",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "vp_switch_pressure",
+      "plot_name": "速度/压力切换时的压力",
+      "enabled": true,
+      "desc": "★ V/P 转换及其压力分布"
+    },
+    {
+      "slide": 7,
+      "category": "pack",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "inj_pressure_xy",
+      "plot_name": "注射位置处压力:XY 图",
+      "enabled": true,
+      "desc": "★ 注射位置处压力 XY 图 (可覆盖标题)"
+    },
+    {
+      "slide": 8,
+      "category": "flow",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "flow_front_temp",
+      "plot_name": "流动前沿温度",
+      "enabled": true,
+      "desc": "★ 流动前沿温度"
+    },
+    {
+      "slide": 9,
+      "category": "pack",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "clamp_force_xy",
+      "plot_name": "锁模力:XY 图",
+      "enabled": true,
+      "desc": "★ 锁模力 XY 图 (可覆盖标题)"
+    },
+    {
+      "slide": 10,
+      "category": "flow",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "weld_lines",
+      "plot_name": "熔接线",
+      "enabled": true,
+      "desc": "★ 熔接线分布"
+    },
+    {
+      "slide": 11,
+      "category": "pack",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "volumetric_shrinkage",
+      "plot_name": "体积收缩率",
+      "enabled": true,
+      "desc": "★ 体积收缩率"
+    },
+    {
+      "slide": 12,
+      "category": "pack",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "sink_marks",
+      "plot_name": "缩痕估算",
+      "enabled": true,
+      "desc": "★ 缩痕估算分布"
+    },
+    {
+      "slide": 13,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warpage_all",
+      "plot_name": "变形，所有效应:变形",
+      "enabled": true,
+      "desc": "★ 变形: 所有效应变形"
+    },
+    {
+      "slide": 14,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warpage_x",
+      "plot_name": "变形，所有效应:X 方向",
+      "enabled": false,
+      "desc": "★ 变形: 所有效应: X 方向"
+    },
+    {
+      "slide": 15,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warpage_y",
+      "plot_name": "变形，所有效应:Y 方向",
+      "enabled": false,
+      "desc": "★ 变形: 所有效应: Y 方向"
+    },
+    {
+      "slide": 16,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warpage_z",
+      "plot_name": "变形，所有效应:Z 方向",
+      "enabled": false,
+      "desc": "★ 变形: 所有效应: Z 方向 (垂直视角)",
+      "view_settings": {
+        "rotation": [
+          -90,
+          0,
+          0
+        ],
+        "fit": true
+      }
+    },
+    {
+      "slide": null,
+      "category": "flow",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "temp_bulk",
+      "plot_name": "气穴",
+      "enabled": false,
+      "desc": "气穴分布"
+    },
+    {
+      "slide": null,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warp_diff_cooling",
+      "plot_name": "变形，冷却不均:变形",
+      "enabled": false,
+      "desc": "冷却不均导致的变形"
+    },
+    {
+      "slide": null,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warp_diff_shrinkage",
+      "plot_name": "变形，收缩不均:变形",
+      "enabled": false,
+      "desc": "收缩不均导致的变形"
+    },
+    {
+      "slide": null,
+      "category": "warp",
+      "mesh_support": [
+        "all"
+      ],
+      "type": "image",
+      "key": "warp_orientation",
+      "plot_name": "变形，分子取向:变形",
+      "enabled": false,
+      "desc": "分子/纤维取向导致的变形"
+    }
+  ],
+  "clamp_force_settings": {
+    "machine_max_ton": null
+  },
+  "on_missing_data": "annotate"
+}

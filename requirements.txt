@@ -1,0 +1,7 @@
+# HYT-MLFXBG 运行时依赖 (实测锁定版本; 全新机器: pip install -r requirements.txt)
+pillow==12.3.0
+python-pptx==1.0.2
+numpy==2.5.2
+
+# 开发工具 (门禁用, 运行非必需)
+ruff==0.16.6

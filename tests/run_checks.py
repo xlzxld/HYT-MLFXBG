@@ -1,0 +1,1047 @@
+"""零依赖回归测试 (stdlib only) — T1 假数据清除 / T2 峰值单源 / T3 模式分发。
+
+运行: python tests/run_checks.py
+退出码 0 = 全部通过; 1 = 存在失败。
+函数级测试, 不需要 PPT 模板与 temp/ 数据。
+"""
+
+import json
+import os
+import sys
+import tempfile
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
+
+from core import pptx_builder as pb
+
+# 任何 fabricated 默认值出现即为失败 (来自旧版 get_formatted_mesh_text /
+# render_material_dialog_cards 的硬编码假数据)
+FAKE_MARKERS = [
+    "61978",
+    "30991",
+    "9662.27",
+    "1288.302",
+    "94.7",
+    "96.4",
+    "15.73",
+    "1.84",
+    "1.16",
+    "EP300H",
+    "SABIC",
+    "320.5",
+]
+
+REAL_MESH = {
+    "mesh_type": "DualDomain",
+    "triangles": 12345,
+    "nodes": 6789,
+    "connectivity_regions": 1,
+    "unvisible_triangles": 3,
+    "volume": 100.5,
+    "surface_area": 750.25,
+    "max_aspect_ratio": 10.2,
+    "ave_aspect_ratio": 2.1,
+    "min_aspect_ratio": 1.05,
+    "free_edges": 4,
+    "manifold_edges": 18000,
+    "non_manifold_edges": 0,
+    "unoriented": 0,
+    "intersection_elements": 0,
+    "overlap_elements": 0,
+    "match_ratio": 92.3,
+    "reciprocal_match_ratio": 95.1,
+}
+
+
+def _mesh_lines(lines):
+    return "\n".join(lines)
+
+
+def test_mesh_missing_file(tmp):
+    """mesh_summary.json 缺失 → 全部占位, 绝无假数据。"""
+    lines, missing = pb.get_formatted_mesh_text(tmp)
+    joined = _mesh_lines(lines)
+    for marker in FAKE_MARKERS:
+        assert marker not in joined, f"假数据标记 {marker} 出现在网格文本中"
+    assert missing, "缺失字段列表为空"
+    assert any("数据不完整" in ln for ln in lines), "结论行未按缺失降级"
+    assert not any(
+        "适合 " in ln and "分析。" in ln and "数据不完整" not in ln for ln in lines
+    )
+
+
+def test_mesh_corrupt_json(tmp):
+    """mesh_summary.json 损坏 → 同缺失处理。"""
+    with open(os.path.join(tmp, "mesh_summary.json"), "w", encoding="utf-8") as f:
+        f.write("{not valid json!!")
+    lines, missing = pb.get_formatted_mesh_text(tmp)
+    joined = _mesh_lines(lines)
+    for marker in FAKE_MARKERS:
+        assert marker not in joined, f"假数据标记 {marker} 出现在网格文本中"
+    assert missing
+
+
+def test_mesh_null_fields(tmp):
+    """字段为 null → 该字段占位而非 0/假值。"""
+    with open(os.path.join(tmp, "mesh_summary.json"), "w", encoding="utf-8") as f:
+        json.dump({k: None for k in REAL_MESH}, f)
+    lines, missing = pb.get_formatted_mesh_text(tmp)
+    joined = _mesh_lines(lines)
+    assert "数据缺失" in joined or "—" in joined
+    assert missing
+
+
+def test_mesh_real_data(tmp):
+    """真实完整数据 → 数值如实渲染, 结论行正常。"""
+    with open(os.path.join(tmp, "mesh_summary.json"), "w", encoding="utf-8") as f:
+        json.dump(REAL_MESH, f)
+    lines, missing = pb.get_formatted_mesh_text(tmp)
+    joined = _mesh_lines(lines)
+    assert "12345" in joined and "6789" in joined
+    assert "750.25" in joined
+    assert any("适合" in ln and "分析。" in ln for ln in lines)
+    assert missing == [], f"完整数据不应报缺失: {missing}"
+
+
+def test_material_missing_file(tmp):
+    """material_info.json 缺失 → 材料卡逐字段'数据缺失', 绝无假材料。"""
+    missing = pb.render_material_dialog_cards(tmp)
+    assert isinstance(missing, list) and len(missing) >= 14, "材料缺失字段列表异常"
+    assert any("牌号" in m for m in missing) and any("制造商" in m for m in missing)
+    assert os.path.exists(os.path.join(tmp, "material_basic.png"))
+    assert os.path.exists(os.path.join(tmp, "material_process.png"))
+
+
+def test_material_sentinel_numerics(tmp):
+    """数值字段为 -1 哨兵 (VBS COM 失败标记) → 视为缺失。"""
+    info = {"trade_name": "ABC", "manufacturer": "某厂", "mold_temp_min": -1}
+    with open(os.path.join(tmp, "material_info.json"), "w", encoding="utf-8") as f:
+        json.dump(info, f)
+    missing = pb.render_material_dialog_cards(tmp)
+    assert any("模具温度" in m or "mold_temp_min" in m for m in missing)
+
+
+def test_resolve_clamp_force(tmp):
+    """CAE 锁模力只认 clamp_force_info.json; 机台吨位只认 config; 缺失为 None。"""
+    cae, mach = pb.resolve_clamp_force({}, tmp)
+    assert cae is None and mach is None
+    with open(os.path.join(tmp, "clamp_force_info.json"), "w", encoding="utf-8") as f:
+        json.dump({"cae_max_clamp_force": 280.3}, f)
+    cae, mach = pb.resolve_clamp_force(
+        {"clamp_force_settings": {"machine_max_ton": 350}}, tmp
+    )
+    assert cae == 280.3 and mach == 350
+    cae, mach = pb.resolve_clamp_force({}, tmp)
+    assert cae == 280.3 and mach is None
+
+
+def test_resolve_peaks_exported(tmp):
+    """导出数据优先: peak_values.json 的曲线峰值直接采用。"""
+    peaks = {
+        "clamp_force": {"peak_value": 320.5, "peak_time": 6.224},
+        "inj_pressure": {"peak_value": 21.45, "peak_time": 5.092},
+    }
+    r = pb.resolve_peaks(peaks, {})
+    assert r["clamp_force"] == (320.5, 6.224)
+    assert r["inj_pressure"] == (21.45, 5.092)
+
+
+def test_resolve_peaks_no_config_fallback(tmp):
+    """导出缺失 → None。config 手工值 (上个产品的数据) 绝不允许再被静默采用。"""
+    config = {
+        "clamp_force_settings": {"cae_max_ton": 300.0, "peak_time_sec": 5.5},
+        "inj_pressure_settings": {"max_pressure_mpa": 20.0, "peak_time_sec": 4.8},
+    }
+    r = pb.resolve_peaks({}, config)
+    assert r["clamp_force"] is None, (
+        "config 陈旧峰值回退未清除 (换产品后臆造上个产品数据)"
+    )
+    assert r["inj_pressure"] is None
+    # 值有效但时刻缺失 (GetMaxValue 回退路径) → 仍无法标注, 不得回退 config
+    r2 = pb.resolve_peaks(
+        {"clamp_force": {"peak_value": 359.8, "peak_time": None}}, config
+    )
+    assert r2["clamp_force"] is None
+
+
+def test_curve_data_peak_parse(tmp):
+    """SaveXYPlotCurveData 导出的曲线 txt → 解析出 (峰值, 时刻), 覆盖 json 值。"""
+    from core import image_processor as ip
+
+    curve = (
+        '"Time [s]","Pressure [MPa]"\n'
+        "0.0000E+000,1.2000E+000\n"
+        "2.5460E+000,1.8300E+001\n"
+        "5.0920E+000,2.1450E+001\n"
+        "6.1000E+000,1.9000E+001\n"
+    )
+    with open(os.path.join(tmp, "inj_pressure_xy_curve_data.txt"), "w") as f:
+        f.write(curve)
+    with open(os.path.join(tmp, "peak_values.json"), "w", encoding="utf-8") as f:
+        json.dump({"inj_pressure": {"peak_value": None, "peak_time": None}}, f)
+    peaks = ip.load_peaks(tmp)
+    assert peaks["inj_pressure"]["peak_value"] == 21.45
+    assert peaks["inj_pressure"]["peak_time"] == 5.092
+
+
+def test_mode_a_xy_probe(tmp):
+    """方案 A 的 XY 截图也要有峰值探针 (用户裁决回归): annotate_xy_curves 给
+    mode_a 与 data_dir 两处的 Moldflow 原生 XY 图画黄色探针, 与方案 B 一致。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    mode_a = os.path.join(tmp, "mode_a")
+    os.makedirs(mode_a)
+    xy_path = os.path.join(mode_a, "inj_pressure_xy.png")
+    Image.new("RGB", (400, 300), (255, 255, 255)).save(xy_path)
+    root_path = os.path.join(tmp, "clamp_force_xy.png")
+    Image.new("RGB", (400, 300), (255, 255, 255)).save(root_path)
+    peaks = {
+        "inj_pressure": (21.45, 5.092),
+        "clamp_force": (320.5, 6.224),
+    }
+    ip.annotate_xy_curves(mode_a, tmp, peaks)
+
+    def yellow_count(path):
+        arr = np.array(Image.open(path).convert("RGB"))
+        return int(
+            (
+                (arr[:, :, 0] > 240)
+                & (arr[:, :, 1] > 240)
+                & (arr[:, :, 2] > 180)
+                & (arr[:, :, 2] < 225)
+            ).sum()
+        )
+
+    assert yellow_count(xy_path) > 100, "方案 A 目录的 XY 图未画探针"
+    assert yellow_count(root_path) > 100, "根目录 XY 图未画探针"
+    # 峰值缺失 → 跳过标注, 图保持原样 (绝不臆造)
+    Image.new("RGB", (400, 300), (255, 255, 255)).save(xy_path)
+    ip.annotate_xy_curves(mode_a, tmp, {"inj_pressure": None, "clamp_force": None})
+    assert yellow_count(xy_path) == 0, "峰值缺失时不应画探针"
+
+
+def test_find_duplicate_slides(tmp):
+    """GUI 页码撞车检测: 勾选+同页 → 报; 未勾选/无页码/非法页码 → 跳过。"""
+    plots = [
+        {"key": "a", "plot_name": "压力", "slide": 9, "enabled": True},
+        {"key": "b", "plot_name": "锁模力XY", "slide": 9, "enabled": True},
+        {"key": "c", "plot_name": "温度", "slide": 8, "enabled": True},
+        {"key": "d", "plot_name": "气穴", "slide": 9, "enabled": False},
+        {"key": "e", "plot_name": "备选", "slide": None, "enabled": True},
+        {"key": "f", "plot_name": "坏页码", "slide": "x", "enabled": True},
+    ]
+    dups = config_gui_mod().find_duplicate_slides(plots)
+    assert dups == {9: ["压力", "锁模力XY"]}, dups
+    # 解除一个勾选 → 无撞页
+    plots[1]["enabled"] = False
+    assert config_gui_mod().find_duplicate_slides(plots) == {}
+
+
+def test_match_plots_to_available(tmp):
+    """动态结果清单精确匹配 (用户裁决: 不猜测/不别名):
+    "体积收缩率" 不得匹配 "顶出时的体积收缩率", 一字不差才算命中。"""
+    plots = [
+        {"key": "vs", "plot_name": "体积收缩率"},
+        {"key": "vse", "plot_name": "顶出时的体积收缩率"},
+        {"key": "wl", "plot_name": "熔接线"},
+        {"key": "missing", "plot_name": "不存在的结果"},
+    ]
+    available = ["体积收缩率", "熔接线", "充填时间"]
+    m = config_gui_mod().match_plots_to_available(plots, available)
+    assert m == {"vs": True, "vse": False, "wl": True, "missing": False}
+    # 空清单 → 全部不命中
+    assert not any(config_gui_mod().match_plots_to_available(plots, []).values())
+
+
+def config_gui_mod():
+    """以模块方式加载 config_gui (不启动 Tk 窗口)。"""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "config_gui_under_test", os.path.join(ROOT, "config_gui.py")
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_broken_model_falls_back_to_viewport(tmp):
+    """SaveImage3 残缺导出回归 (实发: 模型只渲染一条横带, 内容占画布 <10%):
+    拼合时必须弃用残缺模型图, 回退视口图直出 (完整正确保底)。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    data_dir = tmp
+    mode_a = os.path.join(data_dir, "mode_a")
+    mode_b = os.path.join(data_dir, "mode_b")
+    os.makedirs(mode_a)
+    os.makedirs(mode_b)
+
+    # 残缺模型图: 1200x900 白底, 模型只渲染一条 50px 高的横带 (面积占比 ~4%,
+    # 对应实发案例 3.6%: SaveImage3 输出 3840x2160 但模型只渲染出一条横带)
+    broken = np.full((900, 1200, 3), 255, dtype=np.uint8)
+    broken[420:470, 100:1100] = (30, 180, 30)
+    Image.fromarray(broken).save(os.path.join(mode_b, "model_pressure.png"))
+    # 视口图: 完整模型 (占面积大) + 左侧红色数据条
+    vp = np.full((1136, 2112, 3), 255, dtype=np.uint8)
+    vp[100:1000, 400:2000] = (30, 30, 200)
+    vp[50:1000, 30:150] = (200, 30, 30)
+    Image.fromarray(vp).save(os.path.join(mode_a, "pressure.png"))
+    # 正常色带图 (避免 scale 兜底)
+    sc = np.full((1100, 200, 3), 255, dtype=np.uint8)
+    Image.fromarray(sc).save(os.path.join(mode_b, "scale_pressure.png"))
+
+    out = os.path.join(mode_b, "pressure.png")
+    ok = ip.merge_scale_and_model(
+        os.path.join(mode_b, "scale_pressure.png"),
+        os.path.join(mode_b, "model_pressure.png"),
+        out,
+        viewport_path=os.path.join(mode_a, "pressure.png"),
+        target_height=1000,
+    )
+    assert ok, "残缺回退路径未产出"
+    arr = np.array(Image.open(out).convert("RGB"))
+    # 输出应为视口图直出 (2112x1136), 而非残缺模型拼合
+    assert arr.shape[:2] == (1136, 2112), f"未按视口图直出: {arr.shape}"
+    blue = ((arr[:, :, 2] > 120) & (arr[:, :, 0] < 100)).sum()
+    assert blue > 50000, "视口图内容缺失"
+
+    # 正常模型图 (内容占画布 ~55%) 不触发回退, 走正常拼合
+    good = np.full((800, 600, 3), 255, dtype=np.uint8)
+    good[100:700, 100:500] = (30, 30, 200)
+    Image.fromarray(good).save(os.path.join(mode_b, "model_pressure.png"))
+    ok = ip.merge_scale_and_model(
+        os.path.join(mode_b, "scale_pressure.png"),
+        os.path.join(mode_b, "model_pressure.png"),
+        out,
+        viewport_path=os.path.join(mode_a, "pressure.png"),
+        target_height=1000,
+    )
+    assert ok
+    arr2 = np.array(Image.open(out).convert("RGB"))
+    assert abs(arr2.shape[0] / arr2.shape[1] - 1 / 1.58) < 0.02, (
+        f"正常模型不应走视口直出: {arr2.shape}"
+    )
+
+    # 渲染断带特征 (4K 实发: 内容高度占比 30%, 宽高比 2.66) → 回退视口图;
+    # 同样内容但分辨率与配置一致且非断带 → 正常拼合
+    band = np.full((2160, 3840, 3), 255, dtype=np.uint8)
+    band[720:1370, 500:3340] = (30, 30, 200)  # trim 后 ~2850x666: 高占比 31%, 宽高比 4.3
+    Image.fromarray(band).save(os.path.join(mode_b, "model_pressure.png"))
+    ok = ip.merge_scale_and_model(
+        os.path.join(mode_b, "scale_pressure.png"),
+        os.path.join(mode_b, "model_pressure.png"),
+        out,
+        viewport_path=os.path.join(mode_a, "pressure.png"),
+        target_height=1000,
+        expected_model_size=(3840, 2160),
+    )
+    assert ok
+    arr_band = np.array(Image.open(out).convert("RGB"))
+    assert arr_band.shape[:2] == (1136, 2112), f"断带图未回退视口图: {arr_band.shape}"
+
+    # 分辨率不符 (实发: 配 2560x1440 实出 3840x2160 且渲染残缺) → 弃用回退视口图
+    hi_res = np.full((2160, 3840, 3), 255, dtype=np.uint8)
+    hi_res[500:1500, 800:3000] = (30, 30, 200)
+    Image.fromarray(hi_res).save(os.path.join(mode_b, "model_pressure.png"))
+    ok = ip.merge_scale_and_model(
+        os.path.join(mode_b, "scale_pressure.png"),
+        os.path.join(mode_b, "model_pressure.png"),
+        out,
+        viewport_path=os.path.join(mode_a, "pressure.png"),
+        target_height=1000,
+        expected_model_size=(2560, 1440),
+    )
+    assert ok
+    arr3 = np.array(Image.open(out).convert("RGB"))
+    assert arr3.shape[:2] == (1136, 2112), f"分辨率不符未回退视口图: {arr3.shape}"
+    # 分辨率相符的正常大图 → 正常拼合 (不回退)
+    ok = ip.merge_scale_and_model(
+        os.path.join(mode_b, "scale_pressure.png"),
+        os.path.join(mode_b, "model_pressure.png"),
+        out,
+        viewport_path=os.path.join(mode_a, "pressure.png"),
+        target_height=1000,
+        expected_model_size=(3840, 2160),
+    )
+    assert ok
+    arr4 = np.array(Image.open(out).convert("RGB"))
+    assert abs(arr4.shape[0] / arr4.shape[1] - 1 / 1.58) < 0.02, (
+        f"分辨率相符不应回退: {arr4.shape}"
+    )
+
+
+def test_cover_jpeg_regenerated(tmp):
+    """封面 JPEG 派生缓存必须每次重生成, 不得沿用上个产品的旧 jpg。"""
+    from PIL import Image
+
+    solid = os.path.join(tmp, "solid_model.png")
+    Image.new("RGB", (60, 40), (10, 200, 30)).save(solid)
+    jpg = os.path.join(tmp, "solid_model_cover.jpg")
+    Image.new("RGB", (60, 40), (200, 10, 10)).save(jpg, "JPEG")  # 陈旧旧图
+    out = pb.prepare_cover_jpeg(solid)
+    assert out == jpg
+    im = Image.open(jpg)
+    # 重新编码后必须来自本次的 solid_model.png (绿色占主导)
+    assert im.getpixel((30, 20))[1] > 150, "封面 jpg 未随 solid_model.png 重新生成"
+
+
+def test_replace_blob_format_match(tmp):
+    """目标图元部件是 .png 时, 即使新图是 JPEG 也必须按 PNG 编码写入 (格式错配会致图无法显示)。"""
+    from PIL import Image
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    png_src = os.path.join(tmp, "a.png")
+    Image.new("RGB", (40, 30), (1, 2, 3)).save(png_src, "PNG")
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    pic = slide.shapes.add_picture(png_src, Inches(1), Inches(1))
+    tpl = os.path.join(tmp, "t.pptx")
+    prs.save(tpl)
+
+    jpg_src = os.path.join(tmp, "b.jpg")
+    Image.new("RGB", (50, 40), (9, 8, 7)).save(jpg_src, "JPEG")
+
+    prs2 = Presentation(tpl)
+    pic2 = prs2.slides[0].shapes[0]
+    assert pb.replace_picture_blob(pic2, jpg_src)
+    part = pic2.part.rels[pic2._element.blip_rId].target_part
+    blob = part.blob
+    assert blob[:8] == b"\x89PNG\r\n\x1a\n", (
+        "部件扩展名 png 却写入 JPEG 字节 (格式错配)"
+    )
+    assert part.content_type == "image/png"
+
+
+def test_clamp_label_kind(tmp):
+    """S9 锁模力表格标签必须精确匹配; '分析要求'长文本含关键词也不得命中。"""
+    assert pb.clamp_label_kind("CAE最大锁模力") == "cae"
+    assert pb.clamp_label_kind("注塑机最大锁模力") == "machine"
+    assert (
+        pb.clamp_label_kind(
+            "最大压力<注塑机极限压力×70%；CAE最大锁模力＜实际注塑机最大锁模力*80%"
+        )
+        is None
+    ), "长说明文本被误判为标签单元格 (359.8T 写入分析要求事故回归)"
+
+
+def test_conclusion_rows_cleared(tmp):
+    """模板残留的'结果说明'类结论 (对上个产品的判断) 必须清空, 分析要求等通用标准保留。"""
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    s = prs.slides.add_slide(prs.slide_layouts[6])
+    gf = s.shapes.add_table(3, 2, 0, 0, Inches(4), Inches(1)).table
+    gf.cell(0, 0).text = "结果说明"
+    gf.cell(0, 1).text = "缩痕深度>0.03mm，本产品缩痕可见。"
+    gf.cell(1, 0).text = "分析要求"
+    gf.cell(1, 1).text = "油漆件、电镀件<0.03mm，高光<0.01mm"
+    gf.cell(2, 0).text = "锁模说明"
+    gf.cell(2, 1).text = "注塑压力OK，请选择合适的注塑机台吨位。"
+    cleared = pb.clear_stale_conclusion_rows(prs)
+    assert cleared == 2
+    assert gf.cell(0, 1).text.strip() == ""
+    assert gf.cell(2, 1).text.strip() == ""
+    assert "0.03mm" in gf.cell(1, 1).text, "分析要求(通用标准)不应被清空"
+
+
+def test_material_fields_mapping(tmp):
+    """material_fields.json (VBS 官方字段枚举原始导出) → material_info.json 键值映射。"""
+    fields = {
+        "prop_name": "Generic PP",
+        "prop_type": 21000,
+        "material_id": "30012",
+        "material_file": "abc.mdb",
+        "fields": [
+            {"id": 1998, "desc": "贸易名称", "values": "PP K4220"},
+            {"id": 1999, "desc": "系列名称", "values": "polypropylene"},
+            {"id": 20001, "desc": "制造商", "values": "LyondellBasell"},
+            {"id": 1808, "desc": "模具温度范围(推荐)", "values": "20|80"},
+            {"id": 1807, "desc": "模具表面温度", "values": "60"},
+            {"id": 1800, "desc": "熔体温度范围(推荐)", "values": "180|260"},
+            {"id": 1801, "desc": "熔体温度", "values": "230"},
+            {"id": 1805, "desc": "绝对最大熔体温度", "values": "280"},
+            {"id": 1504, "desc": "顶出温度", "values": "124"},
+            {"id": 1804, "desc": "最大剪切应力", "values": "0.25"},
+            {"id": 1806, "desc": "最大剪切速率", "values": "100000"},
+        ],
+    }
+    with open(os.path.join(tmp, "material_fields.json"), "w", encoding="utf-8") as f:
+        json.dump(fields, f, ensure_ascii=False)
+    info = pb.build_material_info(tmp)
+    assert info["trade_name"] == "PP K4220"
+    assert info["family_name"] == "polypropylene"
+    assert info["manufacturer"] == "LyondellBasell"
+    assert info["mold_temp_min"] == 20 and info["mold_temp_max"] == 80
+    assert info["mold_temp_rec"] == 60
+    assert info["melt_temp_min"] == 180 and info["melt_temp_max"] == 260
+    assert info["melt_temp_rec"] == 230
+    assert info["melt_temp_max_abs"] == 280
+    assert info["ejection_temp"] == 124
+    assert info["material_id"] == "30012"
+    assert os.path.exists(os.path.join(tmp, "material_info.json"))
+
+
+def test_material_legacy_ids_fallback(tmp):
+    """描述缺失/不认识时 → 已知 ID 白名单回退补数值。
+    1801 双材料实机交叉验证为绝对最大熔体温度 (通用 PP 与 Novodur 均为 300,
+    高于各自推荐上限的安全天花板), 2026-09-08 起采信映射; 未知 ID 不得映射。"""
+    fields = {
+        "prop_name": "",
+        "prop_type": 21000,
+        "material_id": "",
+        "fields": [
+            {"id": 1808, "desc": "", "values": "20|80"},
+            {"id": 1800, "desc": "unknown gibberish", "values": "180|260"},
+            {"id": 1504, "desc": "", "values": "124"},
+            {"id": 1801, "desc": "", "values": "300"},
+            {"id": 11002, "desc": "", "values": "220"},
+            {"id": 11108, "desc": "", "values": "50"},
+            {"id": 9999, "desc": "", "values": "666"},
+        ],
+    }
+    with open(os.path.join(tmp, "material_fields.json"), "w", encoding="utf-8") as f:
+        json.dump(fields, f, ensure_ascii=False)
+    info = pb.build_material_info(tmp)
+    assert info["mold_temp_min"] == 20 and info["mold_temp_max"] == 80
+    assert info["melt_temp_min"] == 180 and info["melt_temp_max"] == 260
+    assert info["ejection_temp"] == 124
+    assert info["melt_temp_max_abs"] == 300, "1801 (绝对最大熔体温度) 未映射"
+    assert info["melt_temp_rec"] == 220, "11002 (推荐熔体温度) 未映射"
+    assert info["mold_temp_rec"] == 50, "11108 (推荐模具温度) 未映射"
+    assert info.get("material_id") == "" and info["data_complete"] is False
+
+
+def test_material_name_split(tmp):
+    """材料全名 "牌号 : 制造商" 拆分 (VBS 经求解日志锁定真材料后导出)。
+    实机样本: "Novodur HH-106 : INEOS Styrolution" → 牌号/制造商各得其所。"""
+    fields = {
+        "prop_name": "Novodur HH-106 : INEOS Styrolution",
+        "material_name": "Novodur HH-106 : INEOS Styrolution",
+        "prop_type": 21000,
+        "material_id": "2",
+        "fields": [],
+    }
+    with open(os.path.join(tmp, "material_fields.json"), "w", encoding="utf-8") as f:
+        json.dump(fields, f, ensure_ascii=False)
+    info = pb.build_material_info(tmp)
+    assert info["trade_name"] == "Novodur HH-106", (
+        f"牌号拆分错误: {info.get('trade_name')}"
+    )
+    assert info["manufacturer"] == "INEOS Styrolution", (
+        f"制造商拆分错误: {info.get('manufacturer')}"
+    )
+    assert info["material_id"] == "2" and info["data_complete"] is True
+
+    # 旧格式 (无 material_name, 仅 prop_name) 同样拆分; 无分隔符则牌号=全名
+    fields2 = {"prop_name": "单名材料", "prop_type": 21000, "fields": []}
+    with open(os.path.join(tmp, "material_fields.json"), "w", encoding="utf-8") as f:
+        json.dump(fields2, f, ensure_ascii=False)
+    info2 = pb.build_material_info(tmp)
+    assert info2["trade_name"] == "单名材料"
+    assert "manufacturer" not in info2, "无分隔符材料名不应臆造制造商"
+
+
+def test_material_id_sentinel(tmp):
+    """material_id 为 -1/0 哨兵 → 视为缺失 (实发事故: 材料卡显示 -1)。"""
+    fields = {"prop_name": "X", "prop_type": 21000, "material_id": "-1", "fields": []}
+    with open(os.path.join(tmp, "material_fields.json"), "w", encoding="utf-8") as f:
+        json.dump(fields, f, ensure_ascii=False)
+    info = pb.build_material_info(tmp)
+    assert info["material_id"] == "" and info["data_complete"] is False
+
+
+def test_vbs_no_hardcoded_material(tmp):
+    """VBS 材料链路静态断言: 实机挂起的 MaterialSelector 调用已禁用;
+    材料锁定走属性表枚举 + 求解日志匹配 (GetFirstProperty 只取第一项 = 通用 PP 残留,
+    实机取证 2026-09-08: 真材料 Novodur ID=2 在日志 097_1_____~1.out 中记载);
+    材料曲线 CreateMaterialPlot 第二参 = 属性 ID (锁定值, 失败回退 1, 禁用 0);
+    ShowPlot 后 Regenerate + 跳最后一帧 ShowPlotFrame (陈旧帧/数据条串台回归);
+    模型导出前 Viewer.Fit + 等待 (割裂回归); XY 曲线走官方 SaveXYPlotCurveData。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert "MatID = 21000" not in vbs, "VBS 仍硬编码材料ID 21000 (臆造材料根因)"
+    assert "MatID = 20030" not in vbs, "VBS 仍硬编码材料ID 20030"
+    assert "Set MatSel" not in vbs, "MaterialSelector 调用未移除 (实机挂起 16 分钟)"
+    assert "GetFirstProperty" in vbs, "材料属性未走 GetFirstProperty 官方枚举"
+    assert "GetNextPropertyOfType" in vbs, (
+        "未枚举完整属性表 (首项=通用PP残留, 取不到真材料)"
+    )
+    # 结果图查找只认精确名 (用户裁决 2026-09-08: 别名/模糊匹配/数据集ID猜测彻底移除)
+    assert "pObj.aliases" not in vbs, "VBS 仍在使用别名列表查找结果图"
+    assert "CreatePlotByDsID" not in vbs, "VBS 仍在按数据集 ID 猜测创建变形图"
+    assert "FindDatasetByID" not in vbs, "VBS 仍在探测数据集 ID (猜测类查找)"
+    assert vbs.count("FindPlotByName") >= 1, "结果图未走 FindPlotByName 精确查找"
+    assert "FindMaterialInSolverLogs" in vbs, "缺少求解日志材料锁定 (材料取错根因)"
+    assert "IsGenericDefaultName" in vbs, "缺少通用默认材料识别"
+    assert "SaveXYPlotCurveData" in vbs, "XY 曲线未走官方 SaveXYPlotCurveData 数据导出"
+    # 材料曲线: 首选锁定 ID, 失败回退 1; 0 会静默不产出 (实机), 禁止出现
+    assert vbs.count("ExportMaterialPlotSafe(MatDBCode, MatUseIdx, 1310") == 1, (
+        "粘度曲线未按锁定材料 ID 导出"
+    )
+    assert vbs.count("ExportMaterialPlotSafe(MatDBCode, MatUseIdx, 1004") == 1, (
+        "PVT 曲线未按锁定材料 ID 导出"
+    )
+    assert "Array(CLng(idx), 1)" in vbs, "材料曲线缺少回退 ID=1 的保底路径"
+    assert "CreateMaterialPlot(CLng(dbCode), CLng(attemptIdx), CLng(fieldId))" in vbs
+    for zero in (
+        "CreateMaterialPlot(MatDBCode, 0,",
+        "CreateMaterialPlot(CLng(dbCode), 0,",
+    ):
+        assert zero not in vbs, "材料曲线出现 0 序号 (2023 实机静默无产出)"
+    # 文件存在性校验在 ExportMaterialPlotSafe 内统一执行
+    assert "If FSO.FileExists(outPath) Then ok = True" in vbs, (
+        "材料曲线导出缺少文件存在性校验 (假日志回归)"
+    )
+    assert vbs.count("PlotObj.Regenerate") >= 2, (
+        "ShowPlot 后未强制 Regenerate (视口截图陈旧帧/数据条串台回归)"
+    )
+    assert "ShowPlotFrame PlotObj, FrameTotal - 1" in vbs, (
+        "未跳转到最后一帧 (官方导出模式, 数据条串台回归)"
+    )
+    assert "Viewer.Fit" in vbs, "模型图导出前未 Fit (封面局部裁切回归)"
+    assert vbs.count("Call SleepSec(1)") >= 4, (
+        "Fit/ShowPlot 后缺少视口重绘等待 (模型割裂/陈旧帧回归)"
+    )
+    # 数据 JSON 启动清理 (防上个产品数据漏入本次报告)
+    for j in [
+        "material_info.json",
+        "material_fields.json",
+        "mesh_summary.json",
+        "peak_values.json",
+        "clamp_force_info.json",
+        "manifest.json",
+        "solid_model_cover.jpg",
+    ]:
+        assert f'"{j}"' in vbs, f"VBS 启动清理缺少 {j}"
+
+
+def test_resolve_peaks_none(tmp):
+    """导出与 config 均无 → None (调用方跳过探针, 绝不臆造)。"""
+    r = pb.resolve_peaks({}, {})
+    assert r["clamp_force"] is None and r["inj_pressure"] is None
+
+
+def test_probe_annotated_from_peaks(tmp):
+    """像素级: 峰值传入 → 黄色探针绘制; 缺失 → 图面保持无探针。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    data_dir = os.path.join(tmp, "data")
+    os.makedirs(data_dir)
+    os.makedirs(os.path.join(tmp, "mode_b"))  # 避免入口早退
+    xy_path = os.path.join(data_dir, "inj_pressure_xy.png")
+    Image.new("RGB", (400, 300), (255, 255, 255)).save(xy_path)
+
+    def yellow_pixels(path):
+        arr = np.array(Image.open(path).convert("RGB"))
+        return int(
+            (
+                (arr[:, :, 0] > 240)
+                & (arr[:, :, 1] > 240)
+                & (arr[:, :, 2] > 180)
+                & (arr[:, :, 2] < 225)
+            ).sum()
+        )
+
+    peaks = {"clamp_force": None, "inj_pressure": (21.45, 5.092)}
+    ip.process_all_mode_b_plots(
+        os.path.join(tmp, "mode_b"), data_dir=data_dir, peaks=peaks
+    )
+    assert yellow_pixels(xy_path) > 100, "峰值传入但探针未绘制"
+
+    Image.new("RGB", (400, 300), (255, 255, 255)).save(xy_path)
+    peaks2 = {"clamp_force": None, "inj_pressure": None}
+    ip.process_all_mode_b_plots(
+        os.path.join(tmp, "mode_b"), data_dir=data_dir, peaks=peaks2
+    )
+    assert yellow_pixels(xy_path) == 0, "峰值缺失时不应绘制探针"
+
+
+def test_vbs_mode_dispatch(tmp):
+    """VBS 静态断言: BOTH/ALL 模式分发条件正确 (T3 回归)。
+
+    GUI 只产生 A/B/BOTH; VBS 必须覆盖 BOTH (历史 bug: 重复条件致 BOTH 全跳过)。
+    mode_a 视口抓取在所有模式下都导出 (方案 B 拼合依赖其提取色带/坐标系)。
+    """
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert vbs.count('ScreenshotMode = "B" Or ScreenshotMode = "B"') == 0, (
+        "重复的 'B' 条件回归 (BOTH 模式将不导出 mode_b 图像)"
+    )
+    assert 'ScreenshotMode = "BOTH"' in vbs, "VBS 未覆盖 BOTH 模式"
+    cond_a = 'If ScreenshotMode = "A" Or ScreenshotMode = "B" Or ScreenshotMode = "BOTH" Or ScreenshotMode = "ALL" Then'
+    cond_b = 'If ScreenshotMode = "B" Or ScreenshotMode = "BOTH" Or ScreenshotMode = "ALL" Then'
+    assert cond_a in vbs, "方案 A 视口导出条件缺 BOTH"
+    assert cond_b in vbs, "方案 B 独立导出条件缺 BOTH"
+
+
+def test_ref_triad_regenerated(tmp):
+    """ref_triad.png 每次运行强制重生成, 不得沿用上次方案缓存。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    data_dir = tmp
+    mode_a = os.path.join(data_dir, "mode_a")
+    mode_b = os.path.join(data_dir, "mode_b")
+    os.makedirs(mode_a)
+    os.makedirs(mode_b)
+    # 视口图: 400x300 白底 + 右下角黑色像素 (触发布局提取)
+    va = np.full((300, 400, 3), 255, dtype=np.uint8)
+    va[280:295, 350:395] = 0
+    Image.fromarray(va).save(os.path.join(mode_a, "pressure.png"))
+
+    ip.process_all_mode_b_plots(mode_b, data_dir=data_dir)
+    ref = os.path.join(mode_b, "ref_triad.png")
+    assert os.path.exists(ref), "首次运行应生成 ref_triad"
+    # 模拟"上次方案残留": 把 ref 覆盖成纯白
+    Image.new("RGB", (50, 50), (255, 255, 255)).save(ref)
+    ip.process_all_mode_b_plots(mode_b, data_dir=data_dir)
+    arr = np.array(Image.open(ref).convert("RGB"))
+    assert not (arr == 255).all(), "ref_triad 未重生成 (仍在用上次方案缓存)"
+
+
+def test_legend_source_prefers_viewport(tmp):
+    """数据条来源回归 (实发事故: SavePlotScaleImage 每次导出同一条, 串台):
+    视口图 (含标题块的完整图例) 必须优先于 scale_*.png。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    data_dir = tmp
+    mode_a = os.path.join(data_dir, "mode_a")
+    mode_b = os.path.join(data_dir, "mode_b")
+    os.makedirs(mode_a)
+    os.makedirs(mode_b)
+
+    # 视口图: 白底 + 左侧红色图例带 + 右下黑色坐标块 (触发布局提取)
+    va = np.full((400, 600, 3), 255, dtype=np.uint8)
+    va[20:380, 20:200] = (200, 30, 30)  # 红色图例
+    va[350:395, 500:590] = 0  # 坐标系
+    Image.fromarray(va).save(os.path.join(mode_a, "pressure.png"))
+
+    # scale 文件: 绿色条 (若被误用, 拼合图例区呈绿色)
+    sc = np.full((1100, 200, 3), 255, dtype=np.uint8)
+    sc[10:1090, 10:190] = (30, 180, 30)
+    Image.fromarray(sc).save(os.path.join(mode_b, "scale_pressure.png"))
+
+    # 模型图: 白底 + 中央蓝块
+    md = np.full((800, 600, 3), 255, dtype=np.uint8)
+    md[200:600, 200:400] = (30, 30, 200)
+    Image.fromarray(md).save(os.path.join(mode_b, "model_pressure.png"))
+
+    out = os.path.join(mode_b, "pressure.png")
+    ok = ip.merge_scale_and_model(
+        os.path.join(mode_b, "scale_pressure.png"),
+        os.path.join(mode_b, "model_pressure.png"),
+        out,
+        viewport_path=os.path.join(mode_a, "pressure.png"),
+        target_height=900,
+    )
+    assert ok
+    comp = np.array(Image.open(out).convert("RGB"))
+    # 拼合画布上数据条粘贴于 (35,35): 该区域应为红色 (视口源) 而非绿色 (scale 源)
+    samples = [comp[120, 60], comp[200, 60], comp[300, 80]]
+    red = sum(1 for r, g, b in samples if r > 120 and g < 100 and b < 100)
+    green = sum(1 for r, g, b in samples if g > 120 and r < 100)
+    assert red >= 2, f"数据条未取视口源 (取样点: {samples})"
+    assert green == 0, "数据条错误地取了 scale_*.png 源"
+
+
+def test_solid_blank_fallback(tmp):
+    """封面回退回归 (实发事故: FUSION 隐藏 T 层致 VBS 导出全白空图):
+    solid_model.png 全白/缺失时, 必须从 model_pressure.png 重绘兜底。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    data_dir = tmp
+    mode_b = os.path.join(data_dir, "mode_b")
+    os.makedirs(mode_b)
+    # 模型图: 白底 + 灰块 (重绘源)
+    md = np.full((300, 400, 3), 255, dtype=np.uint8)
+    md[80:220, 120:280] = (120, 130, 140)
+    Image.fromarray(md).save(os.path.join(mode_b, "model_pressure.png"))
+    # VBS 导出为全白空图
+    Image.new("RGB", (640, 360), (255, 255, 255)).save(
+        os.path.join(data_dir, "solid_model.png")
+    )
+
+    ip.process_all_mode_b_plots(mode_b, data_dir=data_dir)
+    arr = np.array(Image.open(os.path.join(data_dir, "solid_model.png")).convert("L"))
+    assert (arr < 240).mean() > 0.005, "全白 solid_model 未触发灰色重绘兜底"
+
+
+def test_missing_placeholder_created(tmp):
+    """缺图占位图可生成且非空白。"""
+    import numpy as np
+    from PIL import Image
+
+    ph = pb.ensure_missing_plot_placeholder(tmp)
+    assert os.path.exists(ph)
+    arr = np.array(Image.open(ph).convert("RGB"))
+    assert arr.shape[0] >= 300 and (arr < 200).any(), "占位图应含可见文字/边框"
+
+
+def test_check_env(tmp):
+    """check_env: 配置缺失报问题; 模板标记存在/缺失两种路径。"""
+    import check_env as ce
+
+    problems, _ = ce.check_config(os.path.join(tmp, "nope.json"))
+    assert problems, "缺失配置应报问题"
+
+    from pptx import Presentation
+
+    p = Presentation()
+    s1 = p.slides.add_slide(p.slide_layouts[6])
+    s1.shapes.add_textbox(0, 0, 100, 50).text_frame.text = "报告日期 Moldflow"
+    s2 = p.slides.add_slide(p.slide_layouts[6])
+    s2.shapes.add_textbox(0, 0, 100, 50).text_frame.text = "实体计数 三角形"
+    tpl = os.path.join(tmp, "tpl.pptx")
+    p.save(tpl)
+    problems, infos = ce.check_template(tpl)
+    assert not problems, problems
+
+    p2 = Presentation()
+    p2.slides.add_slide(p2.slide_layouts[6])
+    p2.slides.add_slide(p2.slide_layouts[6])
+    tpl2 = os.path.join(tmp, "tpl2.pptx")
+    p2.save(tpl2)
+    problems2, _ = ce.check_template(tpl2)
+    assert problems2, "缺标记的模板应报问题"
+
+
+def test_load_config_corrupt(tmp):
+    """配置损坏 → ({}, 错误信息) 兜底, 不崩溃 (T28)。"""
+    import unittest.mock as mock
+
+    import config_gui
+
+    with mock.patch.object(config_gui, "CONFIG_FILE", os.path.join(tmp, "no.json")):
+        cfg, err = config_gui.load_config()
+    assert cfg == {} and err is None  # 缺失 = 正常默认
+
+    poisoned = os.path.join(tmp, "poison.json")
+    with open(poisoned, "w", encoding="utf-8") as f:
+        f.write("{broken json")
+    with mock.patch.object(config_gui, "CONFIG_FILE", poisoned):
+        cfg, err = config_gui.load_config()
+    assert cfg == {} and err, "损坏配置应返回错误信息而非崩溃"
+
+
+def test_extract_new_log_text_split_gbk(tmp):
+    """日志 tail 分块读取: GBK 双字节字符跨块不乱码不崩溃 (T27/A10)。"""
+    import config_gui
+
+    path = os.path.join(tmp, "run.log")
+    full = "方案A截图完成".encode("gbk")
+    with open(path, "wb") as f:
+        f.write(full)
+    # 模拟逐字节到达: 增量解码器持有跨块半字符, 拼接结果必须与整读一致
+    collected = ""
+    offset = 0
+    decoder = None
+    for _ in range(len(full)):
+        text, offset, decoder = config_gui.extract_new_log_text(path, offset, decoder)
+        collected += text
+        assert offset <= len(full)
+    assert collected == "方案A截图完成", f"分块拼接结果异常: {collected!r}"
+    # 文件重建 (变小) → 解码器重置从头读
+    with open(path, "wb") as f:
+        f.write("新".encode("gbk"))
+    text, offset, _ = config_gui.extract_new_log_text(path, len(full) + 10, decoder)
+    assert text == "新" and offset == 2
+
+
+def test_fail_policy(tmp):
+    """on_missing_data=fail 且存在缺失 → 必须抛错; annotate → 放行。"""
+    try:
+        pb.enforce_missing_policy(["网格统计: 表面面积"], "fail")
+        raise AssertionError("fail 模式未抛错")
+    except RuntimeError:
+        pass
+    assert pb.enforce_missing_policy([], "fail") is None
+    assert pb.enforce_missing_policy(["x"], "annotate") is None
+
+
+def test_canvas_adaptive_height(tmp):
+    """T8: 画布高度取期望值(1.58:1); 源不足降级绝不放大; 0x0 语义=1215。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    data_dir = tmp
+    mode_b = os.path.join(data_dir, "mode_b")
+    os.makedirs(mode_b)
+    # 800px 高的"模型"图 (白底+黑块) 与"色带"图 (带深色内容, 模拟真实图例文字;
+    # 纯白图例会被空白数据条护栏拒用)
+    Image.new("RGB", (600, 800), (255, 255, 255)).save(
+        os.path.join(mode_b, "model_pressure.png")
+    )
+    scale_im = Image.new("RGB", (200, 1100), (255, 255, 255))
+    from PIL import ImageDraw as _ID
+
+    _ID.Draw(scale_im).rectangle([10, 10, 190, 300], fill=(30, 30, 30))
+    scale_im.save(os.path.join(mode_b, "scale_pressure.png"))
+    out = os.path.join(mode_b, "pressure.png")
+    ok = ip.merge_scale_and_model(
+        os.path.join(mode_b, "scale_pressure.png"),
+        os.path.join(mode_b, "model_pressure.png"),
+        out,
+        target_height=1440,
+    )
+    assert ok
+    with Image.open(out) as im:
+        assert im.height == 870 and abs(im.width / im.height - 1.58) < 0.01, (
+            f"源不足时应降为 800+70=870: got {im.size}"
+        )
+
+    # 源充足 → 画布 = 期望高度
+    Image.new("RGB", (1200, 1400), (255, 255, 255)).save(
+        os.path.join(mode_b, "model_pressure.png")
+    )
+    ok = ip.merge_scale_and_model(
+        os.path.join(mode_b, "scale_pressure.png"),
+        os.path.join(mode_b, "model_pressure.png"),
+        out,
+        target_height=1440,
+    )
+    with Image.open(out) as im:
+        assert im.height == 1440 and im.width == int(1440 * 1.58)
+
+
+def test_gif_global_palette(tmp):
+    """T11: 全帧共用调色板 (逐帧量化在 Pillow 内部已由 palette= 保证一致),
+    优化后的 GIF 帧数与循环标记正确。"""
+    from PIL import Image
+
+    from core import gif_enhancer as ge
+
+    gif_in = os.path.join(tmp, "in.gif")
+    frames = [
+        Image.new("RGB", (80, 60), c) for c in [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
+    ]
+    frames[0].save(
+        gif_in, save_all=True, append_images=frames[1:], duration=100, loop=0
+    )
+    out = ge.optimize_existing_gif(gif_in, target_delay_ms=80)
+    assert out == gif_in
+    with Image.open(gif_in) as im:
+        n = 1
+        try:
+            while True:
+                im.seek(im.tell() + 1)
+                n += 1
+        except EOFError:
+            pass
+    assert n == 3, f"帧数丢失: {n}"
+
+
+def test_sanitize_filename(tmp):
+    """T15: 非法字符/路径逃逸/连续下划线净化, 保留中文。"""
+    assert pb.sanitize_filename('a<b>c:"d"') == "a_b_c_d"
+    assert "..\\evil" not in pb.sanitize_filename("..\\evil")
+    r = pb.sanitize_filename("054_5_hf___2026(1)______方案")
+    assert "__" not in r
+    assert pb.sanitize_filename("模流方案A") == "模流方案A"
+    assert pb.sanitize_filename("") == "方案"
+    assert len(pb.sanitize_filename("x" * 200)) <= 80
+
+
+def test_gif_caps(tmp):
+    """T25: 帧数/高度上限生效。"""
+    from PIL import Image
+
+    from core import gif_enhancer as ge
+
+    gif_in = os.path.join(tmp, "cap.gif")
+    frames = [Image.new("RGB", (400, 300), (i * 5, 100, 200)) for i in range(10)]
+    frames[0].save(gif_in, save_all=True, append_images=frames[1:], duration=50, loop=0)
+    ge.optimize_existing_gif(gif_in, target_delay_ms=80, max_frames=4, max_height=100)
+    with Image.open(gif_in) as im:
+        assert im.n_frames == 4, f"帧数上限未生效: {im.n_frames}"
+        assert im.size[1] == 100, f"高度上限未生效: {im.size}"
+
+
+def test_vbs_syntax_compile(tmp):
+    """VBS 全文编译门禁 (实机 800A03EA 事故回归)。
+
+       静态特征: 行内无孤立 CR (Python
+    转义残留) / 无未闭合字符串 / 字符串区外无 '--'。
+       编译门禁: 复制脚本在 Option Explicit 后插入 WScript.Quit 0 交 cscript 解析 —
+       VBScript 先整体编译再执行, 任何语法错误都会在执行 Quit 前报出, 纯语法检查不跑业务。
+    """
+    import subprocess
+
+    vbs_path = os.path.join(ROOT, "AutoReport.vbs")
+    body = open(vbs_path, "rb").read().decode("gbk")
+    lines = body.split("\r\n")
+    cr = "\r"
+    for idx, l in enumerate(lines, 1):
+        assert cr not in l, f"VBS L{idx} 行内嵌孤立 CR (Python 转义残留)"
+        if l.strip().startswith("'"):
+            continue
+        in_str, outside, k = False, [], 0
+        while k < len(l):
+            c = l[k]
+            if in_str:
+                if c == '"':
+                    if k + 1 < len(l) and l[k + 1] == '"':
+                        k += 2
+                        continue
+                    in_str = False
+            else:
+                if c == '"':
+                    in_str = True
+                else:
+                    outside.append(c)
+            k += 1
+        assert not in_str, f"VBS L{idx} 字符串未闭合"
+        assert "--" not in "".join(outside), (
+            f"VBS L{idx} 字符串区外含 '--' (VBS 引号转义损坏特征, 引号应双写)"
+        )
+    assert lines[7].strip() == "Option Explicit"
+    wrapped = os.path.join(tmp, "syntax_check.vbs")
+    with open(wrapped, "wb") as f:
+        f.write(("\r\n".join(lines[:8] + ["WScript.Quit 0"] + lines[8:])).encode("gbk"))
+    r = subprocess.run(
+        ["cscript", "//nologo", wrapped], capture_output=True, timeout=60
+    )
+    out = (r.stdout + r.stderr).decode("gbk", errors="replace")
+    assert r.returncode == 0, f"VBS 编译失败: {out[:300]}"
+
+
+def main():
+    tests = [
+        (name, fn)
+        for name, fn in sorted(globals().items())
+        if name.startswith("test_") and callable(fn)
+    ]
+    failed = 0
+    for name, fn in tests:
+        try:
+            with tempfile.TemporaryDirectory() as tmp:
+                fn(tmp)
+            print(f"[PASS] {name}")
+        except Exception as e:
+            failed += 1
+            print(f"[FAIL] {name}: {e}")
+    print(f"\n{'=' * 50}\n{len(tests) - failed}/{len(tests)} passed")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
