@@ -107,6 +107,7 @@ For i = 0 To ConfigObj.plots.length - 1
     End If
 Next
 DeleteIfPresent TempDir, "solid_model.png"
+DeleteIfPresent TempDir, "solid_model_cad.png"
 DeleteIfPresent TempDir, "mesh_model.png"
 DeleteIfPresent TempDir, "material_basic.png"
 DeleteIfPresent TempDir, "material_process.png"
@@ -272,13 +273,67 @@ End If
         Viewer.HidePlot pActive
         Set pActive = PlotManager.GetNextPlot(pActive)
     Wend
-    ' 4.1 导出纯模型本体截图 (Slide 1 封面专用: 隐藏节点/梁/边界标注, 仅留模型表面)
-    ' 实机取证 (2026-09-08): Fusion/中性面方案的模型本体就是三角形单元 (T),
-    ' 旧代码无条件隐藏 T 导致导出全白空图 (mode_a/solid_model.png 2560x1440 纯白),
-    ' 仅 3D 实体方案才隐藏 T/TE。
-    Dim LayerManager, L1, I_type, TypeToHide, TypeToShow
+    ' 4.1 导出纯模型本体截图 (Slide 1 封面专用)
+    ' 用户裁决 (2026-09-08, 图层管理器截图): 截模型本体时打开「CAD 几何」所有
+    ' 子层、关闭其它所有图层 (网格节点/网格单元), 得到无网格线的干净实体。
+    ' 层识别经探针取证: 逐层 Name 写入 run.log (On Error 试探, 禁止臆造 API)。
+    ' 双导出兜底: solid_model_cad.png (仅亮 CAD 层, 首选) + solid_model.png
+    ' (现行网格自适应, Fusion 隐藏 T 曾全白故保留), Python 侧择优选用。
+    Dim LayerManager, L1, I_type, TypeToHide, TypeToShow, LayerName, HasCadLayer
     Set LayerManager = Synergy.LayerManager()
     If Not LayerManager Is Nothing Then
+        ' 探针取证: 逐层层名 (取不到则记空, 便于实机核对层树)
+        Set L1 = LayerManager.GetFirst()
+        Do While Not L1 Is Nothing
+            LayerName = ""
+            On Error Resume Next
+            LayerName = CStr(L1.Name)
+            On Error GoTo 0
+            Call LogMsg("[LayerProbe] layer name=""" & LayerName & """")
+            Set L1 = LayerManager.GetNext(L1)
+        Loop
+        ' 第一遍: 只亮「CAD 几何」层 (层名含 CAD, 不区分大小写), 其余层隐藏网格与标注类型
+        HasCadLayer = False
+        Set L1 = LayerManager.GetFirst()
+        While Not L1 Is Nothing
+            LayerName = ""
+            On Error Resume Next
+            LayerName = CStr(L1.Name)
+            On Error GoTo 0
+            If InStr(1, LayerName, "CAD", vbTextCompare) > 0 Then
+                HasCadLayer = True
+                For Each I_type In Array("C", "S", "R", "STL", "BD")
+                    On Error Resume Next
+                    LayerManager.SetTypeVisible L1, I_type, True
+                    On Error GoTo 0
+                Next
+            Else
+                For Each I_type In Array("N", "B", "T", "NBC", "SBC", "LCS", "TE")
+                    On Error Resume Next
+                    LayerManager.SetTypeVisible L1, I_type, False
+                    On Error GoTo 0
+                Next
+            End If
+            Set L1 = LayerManager.GetNext(L1)
+        Wend
+        If HasCadLayer Then
+            On Error Resume Next
+            Viewer.Fit ' 模型全景入框
+            On Error GoTo 0
+            ' Fit 为异步生效: 立即 SaveImage3 曾截到模型贴边/出框的中间态 (实发"模型割裂/不完整")
+            Call SleepSec(1)
+            Viewer.SaveImage3 TempDir & "\solid_model_cad.png", ImageWidth, ImageHeight, True, False, False, False, False, False, False, False, False
+            If FSO.FileExists(TempDir & "\solid_model_cad.png") Then
+                Call LogMsg("CAD 几何图层模型本体已导出: solid_model_cad.png (仅亮 CAD 层)")
+            Else
+                Call LogMsg("WARN: solid_model_cad.png 导出失败, 封面将回退 solid_model.png")
+            End If
+        Else
+            Call LogMsg("WARN: 未识别到名称含 CAD 的图层 (层名探针见上方日志), 封面沿用 solid_model.png 路径")
+        End If
+        ' 第二遍: 现行网格自适应导出 solid_model.png (兜底, 逻辑与历史版本一致)
+        ' 实机取证 (2026-09-08): Fusion/中性面方案的模型本体就是三角形单元 (T),
+        ' 无条件隐藏 T 会导出全白空图, 仅 3D 实体方案才隐藏 T/TE。
         If InStr(MeshTypeRaw, "3D") > 0 Or InStr(MeshTypeRaw, "TET") > 0 Then
             TypeToHide = Array("N", "B", "T", "NBC", "SBC", "LCS", "TE")
         Else
@@ -298,13 +353,12 @@ End If
         On Error Resume Next
         Viewer.Fit ' 模型全景入框 (此导出点无结果图与数据条, Fit 安全; 修复封面局部放大裁切)
         On Error GoTo 0
-        ' Fit 为异步生效: 立即 SaveImage3 曾截到模型贴边/出框的中间态 (实发"模型割裂/不完整")
         Call SleepSec(1)
         Viewer.SaveImage3 TempDir & "\solid_model.png", ImageWidth, ImageHeight, True, False, False, False, False, False, False, False, False
         If FSO.FileExists(TempDir & "\solid_model.png") Then
             FSO.CopyFile TempDir & "\solid_model.png", ModeADir & "\solid_model.png", True
             FSO.CopyFile TempDir & "\solid_model.png", ModeBDir & "\solid_model.png", True
-            Call LogMsg("纯 CAD 实体模型截图已导出: solid_model.png")
+            Call LogMsg("网格自适应模型截图已导出: solid_model.png (封面兜底)")
         End If
         ' 恢复网格显示供 Slide 2 网格质量页使用
         Set L1 = LayerManager.GetFirst()
