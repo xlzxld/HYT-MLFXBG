@@ -365,8 +365,9 @@ class ConfigApp:
             row=0, column=2
         )
         ttk.Label(path_group, text="输出目录:").grid(row=1, column=0, sticky=tk.W)
-        # 输出目录留空 = 默认输出到脚本同级目录 (项目根); 相对路径相对项目根解析
-        self.out_var = tk.StringVar(value=self.cfg.get("output_dir") or SCRIPT_DIR)
+        # 输出目录留空 = 自动输出到本次模型所在目录 (Moldflow 项目目录, 由 VBS
+        # 写入 manifest.model_dir); 相对路径相对项目根解析, 显式填写时按填写值输出
+        self.out_var = tk.StringVar(value=self.cfg.get("output_dir") or "")
         ttk.Entry(path_group, textvariable=self.out_var).grid(
             row=1, column=1, sticky=tk.EW, padx=5, pady=2
         )
@@ -694,11 +695,8 @@ class ConfigApp:
             w, h = 1920, 1080
 
         self.cfg["template_pptx"] = self.tpl_var.get().strip()
-        out_dir = self.out_var.get().strip()
-        # 等于脚本目录时存空串, 配置保持可移植 (空 = 项目根, 与 pptx_builder 同规则)
-        if os.path.normcase(os.path.abspath(out_dir)) == os.path.normcase(SCRIPT_DIR):
-            out_dir = ""
-        self.cfg["output_dir"] = out_dir
+        # 忠实存储用户输入; 留空 = 自动输出到模型所在目录 (resolve_output_dir_for_run 解析)
+        self.cfg["output_dir"] = self.out_var.get().strip()
         self.cfg["open_after_export"] = self.open_var.get()
         self.cfg["show_gui_before_run"] = self.show_gui_var.get()
         self.cfg["screenshot_mode"] = self.mode_var.get()

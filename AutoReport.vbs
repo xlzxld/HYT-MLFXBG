@@ -199,6 +199,18 @@ End If
 On Error GoTo 0
 Call LogMsg("方案: " & StudyName & ", 原始网格类型: " & MeshTypeRaw & ", 零件名: " & PartName)
 
+' Capture model directory (Moldflow project dir) -> manifest.json model_dir (default output dir)
+Dim ModelDir
+ModelDir = ""
+On Error Resume Next
+Dim ProjTmp
+Set ProjTmp = Synergy.Project()
+If Err.Number = 0 Then
+    If Not ProjTmp Is Nothing Then ModelDir = CStr(ProjTmp.Path)
+End If
+Err.Clear
+On Error GoTo 0
+
 ' 4. 网格统计信息提取 (3D / 双层面 / 中性面)
 On Error Resume Next
 Set MeshSummary = DiagnosisManager.GetMeshSummary(False)
@@ -240,6 +252,7 @@ ElseIf Not MeshSummary Is Nothing Then
     Dim MeshJson
     MeshJson = "{" & vbCrLf & _
                "  ""mesh_type"": """ & DetectedMeshType & """," & vbCrLf & _
+               "  ""model_dir"": """ & EscapeJson(ModelDir) & """," & vbCrLf & _
                "  ""triangles"": " & CStr(TriCount) & "," & vbCrLf & _
                "  ""nodes"": " & CStr(NodeCount) & "," & vbCrLf & _
                "  ""tetras"": " & CStr(SafeGetLong(MeshSummary, "TetrasCount", 0)) & "," & vbCrLf & _

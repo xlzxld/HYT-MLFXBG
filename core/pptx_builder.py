@@ -70,6 +70,22 @@ def resolve_output_dir(value, project_root=PROJECT_ROOT):
     return out_dir
 
 
+def resolve_output_dir_for_run(config, manifest, project_root=PROJECT_ROOT):
+    """本次运行的输出目录决策:
+    1. config.output_dir 显式配置优先 (相对路径相对项目根解析);
+    2. 留空 → 输出到本次模型所在目录 (manifest.model_dir, 由 VBS 从
+       Synergy.Project().Path 写入; 目录必须真实存在才采用);
+    3. 均不可用 → 项目根 (兼容旧 manifest / 冒烟运行)。
+    """
+    explicit = str(config.get("output_dir") or "").strip()
+    if explicit:
+        return resolve_output_dir(explicit, project_root)
+    model_dir = str(manifest.get("model_dir") or "").strip()
+    if model_dir and os.path.isdir(model_dir):
+        return model_dir
+    return resolve_output_dir("", project_root)
+
+
 # 数据缺失的统一呈现：宁可明确标注，绝不用任何 fabricated 默认值充数
 MISSING_TEXT = "数据缺失"
 MESH_SHORT = "—"
@@ -1601,9 +1617,10 @@ def build_single_report(
                     f"[Extra Slide][{mode_tag}] Added new slide for: {p_cfg.get('plot_name', key)}"
                 )
 
-    # 确定输出路径 (默认 = 本脚本所在项目的同级目录, 即项目根; 相对路径相对项目根)
+    # 确定输出路径: config.output_dir 显式配置优先, 留空默认输出到本次模型所在目录
+    # (manifest.model_dir), 均不可用回退项目根 (相对路径相对项目根解析)
     if not output_path:
-        out_dir = resolve_output_dir(config.get("output_dir"))
+        out_dir = resolve_output_dir_for_run(config, manifest)
         filename = f"{study_name}-{today_str}-模流分析报告-{mode_tag}.pptx"
         output_path = os.path.join(out_dir, filename)
 
