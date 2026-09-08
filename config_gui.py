@@ -34,13 +34,33 @@ MODE_LABELS = [
 
 # 结果勾选区分类页 (cat_id → 标题); 动态合并的方案结果按关键词落入对应分类
 PLOT_CATEGORIES = [
-    ("core", "★ 默认常用 13 项"),
+    ("core", "★ 默认常用项"),
     ("flow", "流动与充填分析"),
     ("pack", "保压与缩痕分析"),
     ("warp", "翘曲与各向变形"),
     ("cool", "冷却系统分析"),
     ("fiber", "加纤取向分析"),
 ]
+
+# 恢复默认按钮要勾选的白名单 (用户裁决 2026-09-08):
+#   XYZ 三方向变形默认不勾选, 一是模板对应页 (14-16) 图片已手动清空, 程序层剥离块已删除;
+#   二是默认报告聚焦"全部效应变形" (warpage_all) 即可, 三方向分图按需临时勾选。
+DEFAULT_PLOT_KEYS = {
+    "filling_animation",
+    "pressure",
+    "vp_switch_pressure",
+    "inj_pressure_xy",
+    "flow_front_temp",
+    "clamp_force_xy",
+    "weld_lines",
+    "volumetric_shrinkage",
+    "sink_marks",
+    "warpage_all",
+}
+
+# 页码范围: 模板内容 1-16 已固定, 17+ 用于动态追加; 上下限放宽方便 alt 分配
+SLIDE_MIN = 4
+SLIDE_MAX = 32
 
 
 def load_config():
@@ -301,7 +321,7 @@ class ConfigApp:
         btn_bar = ttk.Frame(list_group)
         btn_bar.pack(fill=tk.X, pady=(0, 4))
         ttk.Button(
-            btn_bar, text="★ 恢复默认常用 13 项", command=self.reset_default_plots
+            btn_bar, text="★ 恢复默认常用项", command=self.reset_default_plots
         ).pack(side=tk.LEFT, padx=3)
         ttk.Button(btn_bar, text="全部勾选", width=9, command=self.select_all).pack(
             side=tk.LEFT, padx=3
@@ -533,7 +553,7 @@ class ConfigApp:
             slide_no = p.get("slide")
             cat = p.get("category", "flow")
             if cat_id == "core":
-                if not slide_no or slide_no > 16:
+                if k not in DEFAULT_PLOT_KEYS:
                     continue
             elif cat != cat_id:
                 continue
@@ -547,26 +567,73 @@ class ConfigApp:
             )
             cb.pack(side=tk.LEFT)
             self.plot_checkbuttons.setdefault(k, []).append(cb)
-            # 页码可改 (用户裁决): 1~16, 撞页在保存时拦截; 备选项无页码不显示
-            if slide_no:
-                if k not in self.slide_vars:
-                    self.slide_vars[k] = tk.StringVar(value=str(slide_no))
-                    self.slide_vars[k].trace_add(
-                        "write", lambda *_a, key=k: self._update_plot_label(key)
+            # 页码可改 (用户裁决): 所有条目 (含动态备选) 都展示页码编辑入口,
+            # 范围 SLIDE_MIN~SLIDE_MAX (4-32); alt 项默认空, 勾选时 trace 自动分配下一个空页。
+            current_slide_str = (
+                str(slide_no) if isinstance(slide_no, int) and slide_no > 0 else ""
+            )
+            if k not in self.slide_vars:
+                self.slide_vars[k] = tk.StringVar(value=current_slide_str)
+            else:
+                # tab 重建时同步最新持久值
+                self.slide_vars[k].set(current_slide_str)
+            self.slide_vars[k].trace_add(
+                "write", lambda *_a, key=k: self._on_slide_or_check_change(key)
+            )
+            ttk.Label(row, text="页码").pack(side=tk.LEFT, padx=(10, 2))
+            ttk.Spinbox(
+                row,
+                from_=SLIDE_MIN,
+                to=SLIDE_MAX,
+                width=3,
+                textvariable=self.slide_vars[k],
+                validate="key",
+                validatecommand=(
+                    self.root.register(lambda v: v.isdigit() or v == ""),
+                    "%P",
+                ),
+            ).pack(side=tk.LEFT)
+            # 勾选框 trace: 备选项刚被勾上时自动填一个未占用的页码
+            if k in self.plot_vars:
+                try:
+                    self.plot_vars[k].trace_add(
+                        "write", lambda *_a, key=k: self._on_slide_or_check_change(key)
                     )
-                ttk.Label(row, text="页码").pack(side=tk.LEFT, padx=(10, 2))
-                ttk.Spinbox(
-                    row,
-                    from_=1,
-                    to=16,
-                    width=3,
-                    textvariable=self.slide_vars[k],
-                    validate="key",
-                    validatecommand=(
-                        self.root.register(lambda v: v.isdigit() or v == ""),
-                        "%P",
-                    ),
-                ).pack(side=tk.LEFT)
+                except Exception:
+                    pass
+
+    def _on_slide_or_check_change(self, key):
+        """页码或勾选状态变化: 同步标签前缀; 备选项被首次勾选时若页码空, 自动分配下一个未占用页码。"""
+        sv = self.slide_vars.get(key)
+        enabled = bool(self.plot_vars.get(key, tk.BooleanVar()).get())
+        if enabled and sv is not None and not sv.get().strip():
+            # 仅在动态/备选项上做自动分配; 默认常用项本来就有 slide, 此分支不会命中
+            used = set()
+            for other_k, other_sv in self.slide_vars.items():
+                if other_k == key:
+                    continue
+                try:
+                    n = int(other_sv.get().strip())
+                except (TypeError, ValueError):
+                    continue
+                if SLIDE_MIN <= n <= SLIDE_MAX:
+                    used.add(n)
+            nxt = None
+            for cand in range(SLIDE_MIN, SLIDE_MAX + 1):
+                if cand not in used:
+                    nxt = cand
+                    break
+            if nxt is None:
+                # 全部 4-32 都占用了 — 不自动分配, 让用户手动改; validate 会拦截空值
+                pass
+            else:
+                sv.set(str(nxt))
+                # 同步回 cfg.plots[i].slide, 让落盘即正确
+                for p in self.cfg.get("plots", []):
+                    if p.get("key") == key:
+                        p["slide"] = nxt
+                        break
+        self._update_plot_label(key)
 
     def _update_plot_label(self, key):
         """页码 Spinbox 变化时同步行标签前缀 [Pn]。"""
@@ -574,7 +641,7 @@ class ConfigApp:
         body = "] ".join(base.split("] ")[1:]) if "] " in base else base
         sv = self.slide_vars.get(key)
         prefix = (
-            f"[P{sv.get().strip()}]" if sv and sv.get().strip().isdigit() else "[?]"
+            f"[P{sv.get().strip()}]" if sv and sv.get().strip().isdigit() else "[备选]"
         )
         for w in self.plot_checkbuttons.get(key, []):
             w.configure(text=f"{prefix} {body}")
@@ -603,10 +670,13 @@ class ConfigApp:
             var.set(False)
 
     def reset_default_plots(self):
+        """恢复默认常用项的勾选状态 (白名单 + 取消其余)。
+        行为: DEFAULT_PLOT_KEYS 全部 set(True), 其它条目 set(False) (含动态合并项)。
+        页码 Spinbox 不动 — 维持当前持久值; 仅勾选态重置。"""
         for p in self.cfg.get("plots", []):
-            slide_no = p.get("slide")
-            enabled = bool(slide_no and 4 <= slide_no <= 16)
-            self.plot_vars[p["key"]].set(enabled)
+            k = p["key"]
+            if k in self.plot_vars:
+                self.plot_vars[k].set(k in DEFAULT_PLOT_KEYS)
 
     def collect_config(self):
         res_str = self.res_var.get().split(" ")[0]
@@ -655,11 +725,15 @@ class ConfigApp:
             k = p["key"]
             if k in self.plot_vars:
                 p["enabled"] = self.plot_vars[k].get()
-            if k in self.slide_vars and p.get("slide"):
-                try:
-                    p["slide"] = int(self.slide_vars[k].get().strip())
-                except (TypeError, ValueError):
-                    pass  # 非法页码保留原值; 撞页校验兜底
+            # 页码 Spinbox 写回: 适用于全部条目 (含动态合并的备选项, 用户裁决 2026-09-08)。
+            # 取消原 `p.get("slide")` 守卫, 让 alt 项分配的新页码也能落盘。
+            if k in self.slide_vars:
+                raw = self.slide_vars[k].get().strip()
+                if raw.isdigit():
+                    p["slide"] = int(raw)
+                else:
+                    # 空值/非法: 取消勾选即等同"该条目不要页", 留 None 落盘以便复用
+                    p["slide"] = None
             # 动态合并项未勾选时不落盘, 配置保持精简 (下次启动按清单重新合并)
             if p.get("dynamic") and not p.get("enabled"):
                 continue
@@ -717,6 +791,28 @@ class ConfigApp:
                 )
         if not any(v.get() for v in self.plot_vars.values()):
             problems.append("未勾选任何分析结果项 → 至少勾选一项再生成")
+        # 勾选条目必须有合法页码 (用户裁决 2026-09-08: alt 项必须能分配页码才能生成)
+        empty_page_keys = []
+        for p in self.cfg.get("plots", []):
+            k = p.get("key")
+            if not k or k not in self.plot_vars:
+                continue
+            if not self.plot_vars[k].get():
+                continue
+            sv = self.slide_vars.get(k)
+            raw = (sv.get().strip() if sv else "") or ""
+            try:
+                n = int(raw)
+            except (TypeError, ValueError):
+                n = 0
+            if not (SLIDE_MIN <= n <= SLIDE_MAX):
+                empty_page_keys.append(p.get("plot_name") or k)
+        if empty_page_keys:
+            problems.append(
+                "以下勾选结果未分配有效页码 (4-32): "
+                + "、".join(empty_page_keys)
+                + " → 检查页码 Spinbox, 取消勾选或填写数字"
+            )
         if problems:
             messagebox.showerror(
                 "无法启动生成", "问题: 配置未通过预检\n" + "\n".join(problems)
@@ -911,8 +1007,9 @@ class ConfigApp:
         self.root.after(0, lambda: self.apply_available_plots(result))
 
     def apply_available_plots(self, result):
-        """方案结果清单应用到界面: 默认13项按精确名匹配, 命中才勾选 (用户裁决:
-        动态列表 + 不猜测)。备选项保持现状; 匹配不上的行灰显提示。"""
+        """方案结果清单应用到界面: 默认常用项按精确名匹配, 命中才勾选 (用户裁决:
+        动态列表 + 不猜测)。备选项保持现状; 匹配不上的行灰显提示。
+        仅在合并后出现新条目 (动态项数量增加) 时重建 tab, 避免反复清空用户当前勾选。"""
         if not result.get("ok"):
             hint = result.get("error") or "未取到"
             self.avail_label.configure(
@@ -921,24 +1018,27 @@ class ConfigApp:
             )
             return
         names = result.get("plots", [])
+        before_keys = {p.get("key") for p in self.cfg.get("plots", [])}
         # 先合并新增结果 (配置面板随之扩展), 再做精确名匹配
         merge_available_plots(self.cfg, names)
-        self._build_plot_tabs()
+        after_keys = {p.get("key") for p in self.cfg.get("plots", [])}
+        new_keys = after_keys - before_keys
+        if new_keys:
+            # 有新条目才重建 tab (避免 reset 用户勾选/页码输入)
+            self._build_plot_tabs()
         matched = match_plots_to_available(self.cfg.get("plots", []), names)
         default_plots = [
-            p
-            for p in self.cfg.get("plots", [])
-            if p.get("slide") and 4 <= p.get("slide") <= 16
+            p for p in self.cfg.get("plots", []) if p.get("key") in DEFAULT_PLOT_KEYS
         ]
         n13_hit = sum(1 for p in default_plots if matched.get(p.get("key")))
         self.avail_label.configure(
             text=(
                 f"方案 {result.get('study', '')}: 共 {len(names)} 个结果, "
-                f"默认13项命中 {n13_hit}/{len(default_plots)}"
+                f"默认常用项命中 {n13_hit}/{len(default_plots)}"
             ),
             foreground="#1a7f37",
         )
-        # 默认 13 项: 命中才勾选 (既有裁决), 未命中灰显提示
+        # 默认常用项: 命中才勾选 (既有裁决), 未命中灰显提示
         for p in default_plots:
             k = p.get("key")
             hit = matched.get(k, False)
