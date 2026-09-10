@@ -62,3 +62,23 @@
 
 ### 规则 4：轻量高效原则 (Token Economy)
 * 本文档保持精炼结构，仅保留核心技术结论、断点与待办，严禁将动辄几万字的原始聊天全文 dump 到本文档中，确保每次新会话启动读取时**零延迟、低 Token 消耗**。
+
+---
+
+## 四、 工程治理里程碑 (非会话绑定 / Not Conversation-Bound)
+
+> 本节的记录**不绑定 Conversation ID**——包含在 WorkBuddy 等其他客户端完成的工作，
+> 或无法确证会话 ID 的批次。只按日期与分支归档，供后续接手时核对工程真实状态。
+> **禁止为凑格式编造会话 ID**（AGENTS.md R-0.2）。
+
+| 日期 | 分支 | 里程碑 | 关键文件 |
+| :--- | :--- | :--- | :--- |
+| 2026-09-08 | `fix-portability-8defects` | **8 项可移植性缺陷修复**（路径/模板/输出目录决策链、方案 B 割裂与探针定位、二次触发双实例）+ **Round 2 二次裁决**（封面改模型本体图直出、备选项页码可改、模板手动清空 17.3 MB → 378 KB）；门禁 48/48 全绿 | `core/*.py`<br>`config_gui.py`<br>`AutoReport.vbs`<br>`templates/Moldflow报告模板.pptx` |
+| 2026-09-10 | `fix-portability-8defects` | **契约机械执法层落地**：`enforcement/` 保留为母版包，另将 4 个实例文件落到根目录（`Makefile` 变量按 §2 填好、`gate.yml` 分支改 `master`、Python 3.14）；新增根 `README.md`（仓库总入口 + 文档地图 + 门禁命令）；收紧 `.gitignore`（排除 `.ruff_cache/`、`.workbuddy/`、17 MB 模板备份 `Moldflow报告模板_1.pptx`）；按实测修正 §2 回归计数 34 → 62 | `enforcement/`<br>`Makefile`<br>`commitlint.config.js`<br>`.pre-commit-config.yaml`<br>`.github/workflows/gate.yml`<br>`README.md`<br>`.gitignore`<br>`AGENTS.md`<br>`AI_GUIDE.md` |
+
+**本轮遗留未决项（待人工确认后执行）**：
+1. `pre-commit install` + `pre-commit install --hook-type commit-msg` 与 commitlint 的 npm 包
+   **尚未安装**（属新增依赖，AGENTS.md R-3.5 须授权）；
+2. GitHub 仓库侧 branch protection 尚未勾选（Require PR / Require status checks `gate` / Block force pushes）；
+3. `gate.yml` 的 `python-version: "3.14"` 首次 PR 触发时需确认 runner 可用性，不通过则退回最近小版本并同批修订 §2；
+4. 本地 `master` 领先 origin **14 个提交**，且与 `fix-portability-8defects` **历史不相干**（两个根提交），未在本轮推送。

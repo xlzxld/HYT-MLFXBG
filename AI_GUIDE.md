@@ -60,6 +60,21 @@ flowchart TD
 | [`PROJECT_SESSIONS.md`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/PROJECT_SESSIONS.md) | Markdown | 跨会话追踪与项目记忆索引。记录历史会话 ID、断点状态与真实存储路径，支持 AI 瞬间重载上下文。 |
 | [`使用说明.md`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/使用说明.md) | Markdown | 最终用户操作手册与功能详解。 |
 
+### 治理与契约层（非运行时代码；变更须走 Pull Request）
+
+| 文件 | 作用 |
+| :--- | :--- |
+| [`AGENTS.md`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/AGENTS.md) + [`AUDIT-SPEC.md`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/AUDIT-SPEC.md) + [`BOOTSTRAP.md`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/BOOTSTRAP.md) | 契约三件套 v2.1.1：铁律 / 行为契约 / 门禁登记 §2 / 红线 + 体检细则 + 部署适配流程。**所有 AI 编码助手进入本项目的唯一标准契约** |
+| [`enforcement/`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/enforcement/README.md) | 机械执法层**母版包**（gitleaks / commitlint / Makefile / gate.yml + 四步安装说明），保持可移植、内部文件不与落地实例混同 |
+| `.pre-commit-config.yaml` · `commitlint.config.js` · `Makefile` · `.github/workflows/gate.yml` | 执法包在本仓库的**落地实例**；`Makefile` 四个变量已按 §2 填好，`gate.yml` 分支为 `master` |
+| [`README.md`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/README.md) | 仓库总入口：快速开始 / 目录结构 / 文档地图 / 门禁命令 |
+| [`tests/run_checks.py`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/tests/run_checks.py) | 零依赖回归套件（门禁第 ② 步，无需 Moldflow 与模板） |
+| [`check_env.py`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/check_env.py) | 环境预检（依赖 / 配置 / 模板标记，失败附修复指引） |
+
+> **边界纪律**：`enforcement/` 是母版（空白变量、通用分支名 `main`），
+> 根目录同名文件是本项目的已填充实例（`master`、§2 命令）。
+> 改动母版要同步全部下游项目；改动实例只影响本仓库。**不要把两者合并成一份。**
+
 ---
 
 ## ⚠️ 三、 10 大技术陷阱与底层避坑指南 (The Hall of Gotchas)
@@ -199,11 +214,17 @@ python core/pptx_builder.py --config report_config.json --data-dir temp --mode B
 # 5. 打开配置界面
 python config_gui.py
 
-# 6. Git 状态校验
+# 6. Git 状态校验 (并核对本地分支相对 origin 的领先/落后)
 git status
+
+# 7. 聚合门禁 (§2 四个环节一把梭; 需 make, 由 CI 调用)
+make verify
+
+# 8. 密钥与提交信息钩子 (需先 pre-commit install, 见 enforcement/README.md)
+pre-commit run --all-files
 ```
 
-## 🧾 六、 数据完整性与产物判读 (2026-09 优化新增, AI/维护者必读)
+## 🧾 五、 数据完整性与产物判读 (2026-09 优化新增, AI/维护者必读)
 
 ### 模板契约 (布局钉死的边界)
 - 模板需 ≥2 页: 第 1 页表格含标记文字「报告日期」「Moldflow」(封面回填锚点);
@@ -319,9 +340,43 @@ git status
 
 ---
 
-## 🧠 五、 记忆加载与会话接手准则
+## 🧠 六、 记忆加载与会话接手准则
 
 当你在新会话或重启后进入本项目时：
 1. **第一步**：读取根目录的 [`PROJECT_SESSIONS.md`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/PROJECT_SESSIONS.md)，获取当前活跃的 Conversation ID 与断点历史；
 2. **第二步**：查阅本文档 [`AI_GUIDE.md`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/AI_GUIDE.md) 了解架构规范，严格遵循上述 10 大避坑法则；
-3. **第三步**：完成新功能的开发或缺陷修复后，同步在 [`PROJECT_SESSIONS.md`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/PROJECT_SESSIONS.md) 的断点清单中勾选归档。
+3. **第三步**：完成新功能的开发或修复后，同步在 [`PROJECT_SESSIONS.md`](file:///c:/Users/5600/Documents/ZDH/MLFXBG/PROJECT_SESSIONS.md) 的断点清单中勾选归档。
+
+---
+
+## 🧱 七、 契约与机械执法层 (Enforcement)
+
+> 本文档管"怎么改不出错"，`AGENTS.md` 管"必须怎么改"。二者关系：**文档管行为，钩子兜底线**。
+
+### 7.1 三层结构（别混同）
+
+| 层 | 文件 | 可移植性 |
+| :--- | :--- | :--- |
+| 契约层 | `AGENTS.md` / `AUDIT-SPEC.md` / `BOOTSTRAP.md` (v2.1.1) | 通用母版，随项目拷贝 |
+| 执法母版 | `enforcement/`（4 个模板 + README） | 通用母版，**变量留空、分支写 `main`** |
+| 落地实例 | 根 `Makefile` / `commitlint.config.js` / `.pre-commit-config.yaml` / `.github/workflows/gate.yml` | 本仓库专属，变量按 §2 填好、分支 `master` |
+
+### 7.2 覆盖对照（哪些红线真的机械化了）
+
+| 契约规则 | 执法手段 | 覆盖程度 |
+| :--- | :--- | :--- |
+| R-0.4 禁止泄露密钥 | gitleaks pre-commit + CI | **部分**：密钥类覆盖；内网域名 / 连接串须自定义规则或人工审查 |
+| R-3.8 原子提交 / Conventional Commits | commitlint（commit-msg 钩子） | 完整（需 `pre-commit install --hook-type commit-msg`） |
+| R-0.1 未验证不交付 | `make verify`（CI 侧） | 聚合门禁；本地 Windows 需逐条执行 §2 |
+| §2 主干保护 | branch protection + gate CI | 依赖 GitHub 侧配置（Settings → Branches） |
+
+**未机械化、仍靠纪律的红线**：R-3.1 吞异常、R-3.2 放宽断言、R-3.3 调试残留、
+R-3.10 最小改动 —— 由提示词纪律 + 人工审查 + `/audit` 体检兜底。
+
+### 7.3 状态与操作
+
+- 已落地：4 个实例文件已入库，`Makefile` 变量与 §2 对齐。
+- **未激活**：`pre-commit` 框架与 commitlint 的 npm 包**尚未安装**（属新增依赖，R-3.5 须授权）。激活命令见 `README.md` 第四节。
+- **本机 Windows 无 `make`**：本地闭环按 §2 三条命令 + 冒烟逐条执行并附退出码；`make verify` 由 `gate.yml` 在 ubuntu runner 上跑。
+- 升级 gitleaks：`pre-commit autoupdate`。
+- 分支保护需在 GitHub 仓库侧勾选（Require PR / Require status checks `gate` / Block force pushes）。
