@@ -1,0 +1,23 @@
+name: gate
+on:
+  pull_request:
+    branches: [master]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # 运行时按 AGENTS.md §2 技术栈取值: Python 3.14 + Pillow/python-pptx/numpy/ruff
+      # 注: 首次 PR 触发时若 runner 无 3.14 可用版本, 退回最近可用小版本并同批修订 §2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - name: Install dependencies
+        run: pip install -r requirements.txt pre-commit
+      - name: Secrets scan (gitleaks, all files)
+        run: pre-commit run --all-files
+      - name: Verify (fmt-check / lint / test / build)
+        run: make verify

@@ -1,0 +1,23 @@
+name: gate
+on:
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # 按项目技术栈补充运行时安装，例如：
+      #   - uses: actions/setup-node@v4
+      #     with: { node-version: 20 }
+      #   - uses: actions/setup-python@v5
+      #     with: { python-version: "3.12" }
+      - name: Install pre-commit
+        run: pip install pre-commit
+      - name: Secrets scan (gitleaks, all files)
+        run: pre-commit run --all-files
+      - name: Verify (fmt-check / lint / test / build)
+        run: make verify
