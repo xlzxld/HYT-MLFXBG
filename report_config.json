@@ -5,8 +5,8 @@
   "show_gui_before_run": true,
   "screenshot_mode": "BOTH",
   "image_settings": {
-    "width": 0,
-    "height": 0,
+    "width": 2560,
+    "height": 1440,
     "keep_view": true,
     "hide_axis": false,
     "plot_legend": true,
