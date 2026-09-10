@@ -7,10 +7,10 @@ temp/
 /temp/
 
 # 2. 生成的大体积 PowerPoint 报告文件 (*.pptx)
-# 例外: templates/ 下的模板文件必须入库 (可移植性契约, 配置以相对路径引用)
+# 例外: 仅 templates/ 下的**当前母版**入库 (可移植性契约, report_config 以相对路径引用)
+#       templates/Moldflow报告模板_1.pptx 是历史备份 (17MB), 不入库
 *.pptx
-!templates/
-!templates/*.pptx
+!templates/Moldflow报告模板.pptx
 
 # 3. Python 字节码与缓存
 __pycache__/
@@ -36,3 +36,7 @@ Desktop.ini
 .zcode/
 *.sublime-project
 *.sublime-workspace
+
+# 7. 本地缓存与 AI 助手工作目录 (个人数据, 单人项目不入库; CI 侧门禁独立于这些目录)
+.ruff_cache/
+.workbuddy/
