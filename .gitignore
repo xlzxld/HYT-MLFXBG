@@ -40,3 +40,6 @@ Desktop.ini
 # 7. 本地缓存与 AI 助手工作目录 (个人数据, 单人项目不入库; CI 侧门禁独立于这些目录)
 .ruff_cache/
 .workbuddy/
+
+# 同步器机器记录（契约约定不入库）
+.agents/.source

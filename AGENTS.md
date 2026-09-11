@@ -1,6 +1,6 @@
 # 项目 AI 开发规范 (AGENTS.md)
 
-> **版本 v2.1.1** | 本文件变更须走 Pull Request，并与同目录 `AUDIT-SPEC.md` / `BOOTSTRAP.md` 同批修订。
+> **版本 v3.1.2** | 本文件变更须走 Pull Request，并与 `.agents/` 下的 `AUDIT-SPEC.md` / `BOOTSTRAP.md` 同批修订。
 > **标准契约**：所有 AI 编码助手（Claude Code、Cursor、Copilot、Windsurf 等）进入本项目的唯一标准契约。
 > **注意力预算**：常驻仅本文件（< 80 行 / ≤2000 token / ≤30 条规则，行数以 `wc -l`（LF）计）；深度细则按需加载；可机器执法的交给 hooks / CI，不占提示词预算。
 
@@ -20,9 +20,10 @@
 
 ## 1. 行为契约（不可豁免）
 
-- **R-1.1 二元判定**：符合性自报只允许 ✅ 符合 / ❌ 违反，禁止"可能 / 尽量 / 应该 / 通常"；灰区技术发现例外——按 AUDIT-SPEC §3 置信度规则（确凿 / 疑似）携带证据与置信度，禁止虚假确定。
+- **R-1.1 二元判定**：符合性自报只允许 ✅ 符合 / ❌ 违反，禁止"可能 / 尽量 / 应该 / 通常"；灰区技术发现例外——按 `.agents/AUDIT-SPEC.md` §3 置信度规则（确凿 / 疑似）携带证据与置信度，禁止虚假确定。
 - **R-1.2 闭环验证**：完成修改后在终端实际执行门禁命令，汇报必须附命令与退出码；退出码取自门禁命令本体，管道 / 链式执行须逐段取证，禁止以末级命令退出码冒充门禁结果。
 - **R-1.3 修复前置**：修 Bug 必附回归测试（修复前失败、修复后通过）；无测试套件项目改用 stdlib / 零依赖脚本提供回归，或按 §2 尾注降级为手动验证清单。
+- **R-1.4 大白话交流**：跟用户交流用简洁大白话——先结论后细节，一句话能说清的不写三句，少用术语，非用不可时紧跟一句白话解释；代码、命令、退出码等技术取证内容保持原样，R-1.1 / R-1.2 的精度要求不因白话化降低。
 
 ## 2. 项目环境与验证门禁
 
@@ -30,10 +31,10 @@
 |---|---|---|
 | 技术栈 | Python 3.14.6 + Pillow 12.3.0 + python-pptx 1.0.2 + numpy 2.5.2（GUI 为 stdlib tkinter）；VBS (GBK) `AutoReport.vbs` 驱动 Moldflow COM；无 manifest（裸源码探测） | — |
 | 构建 (Build) | 无 | — |
-| 测试 (Test) | `python tests/run_checks.py`（零依赖回归，62 项）；端到端冒烟：`python core/pptx_builder.py --config report_config.json --data-dir temp --mode B --no-open --output temp\smoke.pptx` | ✅ 回归 62/62 通过且冒烟退出码 0 输出 `[SUCCESS]`；已知豁免清单内且非本次引入的失败不阻断，但须列出 |
+| 测试 (Test) | `python tests/run_checks.py` | ✅ 回归 62/62 通过；端到端冒烟（人工时跑）：`python core/pptx_builder.py --config report_config.json --data-dir temp --mode B --no-open --output temp\smoke.pptx` 输出 [SUCCESS]；已知豁免清单内且非本次引入的失败不阻断，但须列出 |
 | 静态检查 (Lint) | `python -m py_compile config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py check_env.py` | ✅ 0 错误 0 警告（基线豁免同上） |
-| 格式化 (Format) | `python -m ruff format --check config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py`（ruff 0.16.6） | ✅ 对本次改动文件执行，0 差异 |
-| 聚合门禁 (闭环入口) | `make verify`（按上表四段依次执行；本机 Windows 未装 make，本地逐条执行上表命令） | ✅ 四段逐段退出码 0；由 `.github/workflows/gate.yml` 在 PR 上调用，变量见根目录 `Makefile` |
+| 格式化 (Format) | `python -m ruff format --check config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py` | ✅ 对本次改动文件执行，0 差异（ruff 0.16.6） |
+| 聚合门禁 (闭环入口) | 无（v3 起由技能目录 `tsc.py verify --project <本项目>` 承担，不再依赖 make/Makefile） | ✅ 四段逐段退出码 0 |
 | 主干分支 | master | ✅ 禁止未经 Pull Request 直接向主干提交 |
 | 已知豁免清单 | 无 | 唯一合法的基线失败白名单，新增须走 PR；按 `命令:条目描述` 逐条登记，便于机器比对与复核 |
 
@@ -62,15 +63,16 @@
 
 | 触发词 | 动作 |
 |---|---|
-| **体检 / audit / 扫一下代码** | 读取 `./AUDIT-SPEC.md` 执行四大靶心只读扫描；输出 P0~P3 表格后强制停下等确认，严禁修改。 |
+| **体检 / audit / 扫一下代码** | 读取 `.agents/AUDIT-SPEC.md` 执行四大靶心只读扫描；输出 P0~P3 表格后强制停下等确认，严禁修改。 |
 | **修复 [ID]** | 先跑基线 → 最小改动修复 → 附回归测试 → 门禁全绿 → 原子提交；触 🔴 / 🟡 立即停。 |
-| **适配 / 初始化规范** | 读取 `./BOOTSTRAP.md`：已存在同版本 AGENTS.md 时仅幂等更新 §2 表格并输出 diff 待确认，禁止全文覆盖；检测到旧版本契约则走 BOOTSTRAP 模式 C 升级。 |
+| **适配 / 初始化规范** | 读取 `.agents/BOOTSTRAP.md`：已存在同版本 AGENTS.md 时仅幂等更新 §2 表格并输出 diff 待确认，禁止全文覆盖；检测到旧版本契约则走 BOOTSTRAP 模式 C 升级。 |
 
 ## 5. 外置文件（按需加载，不常驻）
 
 | 文件 | 何时读 |
 |---|---|
-| `./AUDIT-SPEC.md` | 说"体检"时 |
-| `./BOOTSTRAP.md` | 说"适配 / 初始化规范"或新项目部署时 |
+| `.agents/AUDIT-SPEC.md` | 说"体检"时 |
+| `.agents/BOOTSTRAP.md` | 说"适配 / 初始化规范"或新项目部署时 |
+| `.agents/enforcement/`、`.agents/test/` | 前者由 `install` 默认落盘到生效位置；后者仅在验证契约自身时使用（AI 平时不读） |
 
-> 深度细则不内联进本文件——挤占高频规则的注意力预算。三文件同目录整体拷贝即为完整部署单元。
+> 深度细则不内联进本文件——挤占高频规则的注意力预算。**部署单元 = 根目录 `AGENTS.md` + 项目内 `.agents/`（仅 `project.py` / `VERSION` / `.source`）+ 执法包三份落盘件**；执行逻辑常驻技能目录，接入与更新由技能统一执行。
