@@ -1,6 +1,6 @@
 # 项目 AI 开发规范 (AGENTS.md)
 
-> **版本 v3.1.2** | 本文件变更须走 Pull Request，并与 `.agents/` 下的 `AUDIT-SPEC.md` / `BOOTSTRAP.md` 同批修订。
+> **版本 v3.1.3** | 本文件变更须走 Pull Request，并与 `.agents/` 下的 `AUDIT-SPEC.md` / `BOOTSTRAP.md` 同批修订。
 > **标准契约**：所有 AI 编码助手（Claude Code、Cursor、Copilot、Windsurf 等）进入本项目的唯一标准契约。
 > **注意力预算**：常驻仅本文件（< 80 行 / ≤2000 token / ≤30 条规则，行数以 `wc -l`（LF）计）；深度细则按需加载；可机器执法的交给 hooks / CI，不占提示词预算。
 
