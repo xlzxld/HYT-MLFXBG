@@ -339,7 +339,7 @@ def generate_solid_cad_model(model_source_path, output_path):
         # 适度裁剪留白
         out_trimmed = trim_white_borders(out_im, border=20).convert("RGB")
         os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-        out_trimmed.save(output_path, "PNG", quality=98)
+        out_trimmed.save(output_path, "PNG")
         print(
             f"[image_processor] Created pure CAD solid model (no mesh, no nodes) -> {output_path}"
         )
@@ -759,7 +759,7 @@ def merge_scale_and_model(
                         f"[image_processor] WARN: inj_pressure 峰值数据缺失, 跳过探针标注 ({os.path.basename(output_path)})"
                     )
             os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-            trimmed.save(output_path, "PNG", quality=98)
+            trimmed.save(output_path, "PNG")
             print(
                 f"[image_processor] Exported clean XY plot -> {os.path.basename(output_path)}"
             )
@@ -873,7 +873,7 @@ def merge_scale_and_model(
 
     # 若没有任何数据条，则单独输出模型
     if left_bar is None:
-        im_model_trimmed.convert("RGB").save(output_path, "PNG", quality=98)
+        im_model_trimmed.convert("RGB").save(output_path, "PNG")
         return True
 
     # ---------------- 3. 画布构建与满幅黄金比例排版 ----------------
@@ -949,7 +949,7 @@ def merge_scale_and_model(
         canvas.paste(triad, (tr_x, tr_y), triad)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    canvas.save(output_path, "PNG", quality=98)
+    canvas.save(output_path, "PNG")
     print(
         f"[image_processor] Merged Mode B (图1/2/3规范) -> {os.path.basename(output_path)} ({target_w}x{target_h})"
     )
@@ -1093,7 +1093,7 @@ def annotate_xy_curves(mode_a_dir, data_dir, peaks=None):
                         peak_x_sec=xy_peak[1],
                         peak_y_mpa=xy_peak[0],
                     )
-                im_xy_annot.save(xy_file, "PNG", quality=98)
+                im_xy_annot.save(xy_file, "PNG")
             except Exception as e:
                 print(f"[image_processor] Error annotating {xy_file}: {e}")
 

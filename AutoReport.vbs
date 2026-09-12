@@ -73,7 +73,8 @@ If showGui And fromGui <> "1" Then
     ' python 不在 PATH 时 Run 会直接抛 800A 未处理错误, 用户只看到天书弹窗;
 ' 先探测再给中文引导
 On Error Resume Next
-ret = WshShell.Run("python """ & BaseDir & "\config_gui.py""", 1, True)
+' pythonw 无控制台: 用 python 拉起配置界面时, 窗口开着期间会挂一个黑框(start.bat 同款用 pythonw)
+ret = WshShell.Run("pythonw """ & BaseDir & "\config_gui.py""", 1, True)
 If Err.Number <> 0 Then
     Err.Clear
     On Error GoTo 0
@@ -129,8 +130,19 @@ If ImageWidth >= 3840 Or ImageHeight >= 2160 Then
 End If
 
 ' 2.5 陈旧产物清理: 先删本次将重导出的 per-plot 文件, 防止导出中断时旧图混入本次报告
-Dim kk
-For i = 0 To ConfigObj.plots.length - 1
+Dim kk, PlotsLen
+PlotsLen = -1
+On Error Resume Next
+PlotsLen = ConfigObj.plots.length
+If Err.Number <> 0 Then Err.Clear
+On Error GoTo 0
+If PlotsLen < 0 Then
+    ' 配置缺 plots 数组(手改坏/外部入口): 此前 .length 直接抛 424 运行时错误
+    MsgBox "配置文件缺少 plots 结果清单 (report_config.json), 请用配置界面重新保存一次。", 16, "错误"
+    Call LogMsg("ERROR: ConfigObj.plots 缺失或非数组, 无法继续")
+    WScript.Quit 1
+End If
+For i = 0 To PlotsLen - 1
     Set pObj = HTML.parentWindow.getArrayItem(ConfigObj.plots, i)
     kk = CStr(pObj.key)
     If kk <> "" Then
@@ -271,7 +283,7 @@ If Not MeshSummary Is Nothing Then
     Dim MatchVal, RecipVal, MVol, TriCount, NodeCount, FreeE, ManiE, NonManiE, UnorientE, InterE, OverE
     TriCount = SafeGetLong(MeshSummary, "TrianglesCount", 0)
     NodeCount = SafeGetLong(MeshSummary, "NodesCount", 0)
-    MVol = Round(SafeGetDbl(MeshSummary, "MeshVolume", 0), 3)
+    MVol = SafeGetDbl(MeshSummary, "MeshVolume", -1.0)
     FreeE = SafeGetLong(MeshSummary, "FreeEdgesCount", 0)
     ManiE = SafeGetLong(MeshSummary, "ManifoldEdgesCount", 0)
     NonManiE = SafeGetLong(MeshSummary, "NonManifoldEdgesCount", 0)
@@ -279,13 +291,19 @@ If Not MeshSummary Is Nothing Then
     InterE = SafeGetLong(MeshSummary, "IntersectionElements", 0)
     OverE = SafeGetLong(MeshSummary, "OverlapElements", 0)
     
-    MatchVal = SafeGetDbl(MeshSummary, "MatchRatio", 0)
-    If MatchVal > 0 And MatchVal <= 1.0 Then MatchVal = MatchVal * 100.0
-    MatchVal = Round(MatchVal, 1)
+    ' 读失败(-1)一律输出 null: 体积=0/纵横比<1 对实际方案不可能, 写 0 会被
+    ' Python 端当真值渲染 (与 surface_area 的 MSAStr 及"绝不 fabricated"红线同口径)
+    MatchVal = SafeGetDbl(MeshSummary, "MatchRatio", -1.0)
+    If MatchVal >= 0 Then
+        If MatchVal <= 1.0 Then MatchVal = MatchVal * 100.0
+        MatchVal = Round(MatchVal, 1)
+    End If
 
-    RecipVal = SafeGetDbl(MeshSummary, "ReciprocalMatchRatio", 0)
-    If RecipVal > 0 And RecipVal <= 1.0 Then RecipVal = RecipVal * 100.0
-    RecipVal = Round(RecipVal, 1)
+    RecipVal = SafeGetDbl(MeshSummary, "ReciprocalMatchRatio", -1.0)
+    If RecipVal >= 0 Then
+        If RecipVal <= 1.0 Then RecipVal = RecipVal * 100.0
+        RecipVal = Round(RecipVal, 1)
+    End If
 
     Dim MSA, MSAStr
     MSA = SafeGetDbl(MeshSummary, "SurfaceArea", -1.0)
@@ -305,19 +323,19 @@ If Not MeshSummary Is Nothing Then
                "  ""beams"": " & CStr(SafeGetLong(MeshSummary, "BeamsCount", 0)) & "," & vbCrLf & _
                "  ""connectivity_regions"": " & CStr(SafeGetLong(MeshSummary, "ConnectivityRegions", 1)) & "," & vbCrLf & _
                "  ""unvisible_triangles"": " & CStr(SafeGetLong(MeshSummary, "ZeroAreaTrianglesCount", 0)) & "," & vbCrLf & _
-               "  ""volume"": " & CStr(MVol) & "," & vbCrLf & _
+               "  ""volume"": " & DblOrJsonNull(MVol, 3) & "," & vbCrLf & _
                "  ""surface_area"": " & MSAStr & "," & vbCrLf & _
-               "  ""max_aspect_ratio"": " & CStr(Round(SafeGetDbl(MeshSummary, "MaxAspectRatio", 0), 2)) & "," & vbCrLf & _
-               "  ""ave_aspect_ratio"": " & CStr(Round(SafeGetDbl(MeshSummary, "AveAspectRatio", 0), 2)) & "," & vbCrLf & _
-               "  ""min_aspect_ratio"": " & CStr(Round(SafeGetDbl(MeshSummary, "MinAspectRatio", 0), 2)) & "," & vbCrLf & _
+               "  ""max_aspect_ratio"": " & DblOrJsonNull(SafeGetDbl(MeshSummary, "MaxAspectRatio", -1.0), 2) & "," & vbCrLf & _
+               "  ""ave_aspect_ratio"": " & DblOrJsonNull(SafeGetDbl(MeshSummary, "AveAspectRatio", -1.0), 2) & "," & vbCrLf & _
+               "  ""min_aspect_ratio"": " & DblOrJsonNull(SafeGetDbl(MeshSummary, "MinAspectRatio", -1.0), 2) & "," & vbCrLf & _
                "  ""free_edges"": " & CStr(FreeE) & "," & vbCrLf & _
                "  ""manifold_edges"": " & CStr(ManiE) & "," & vbCrLf & _
                "  ""non_manifold_edges"": " & CStr(NonManiE) & "," & vbCrLf & _
                "  ""unoriented"": " & CStr(UnorientE) & "," & vbCrLf & _
                "  ""intersection_elements"": " & CStr(InterE) & "," & vbCrLf & _
                "  ""overlap_elements"": " & CStr(OverE) & "," & vbCrLf & _
-               "  ""match_ratio"": " & CStr(MatchVal) & "," & vbCrLf & _
-               "  ""reciprocal_match_ratio"": " & CStr(RecipVal) & vbCrLf & _
+               "  ""match_ratio"": " & DblOrJsonNull(MatchVal, 1) & "," & vbCrLf & _
+               "  ""reciprocal_match_ratio"": " & DblOrJsonNull(RecipVal, 1) & vbCrLf & _
                "}"
     WriteUtf8TextFile TempDir & "\mesh_summary.json", MeshJson
     Call LogMsg("网格统计数据已导出到 mesh_summary.json")
@@ -361,7 +379,15 @@ End If
         Viewer.Fit ' 模型全景入框 (此导出点无结果图与数据条, Fit 安全; 修复封面局部放大裁切)
         On Error GoTo 0
         Call SleepSec(1)
+        ' SaveImage3 是实机最易抛错的 API 之一(4K 断带取证): 裸调用失败会
+        ' 800A 中断整个脚本, 后续网格图/材料曲线/Python 构建全部不执行
+        On Error Resume Next
         Viewer.SaveImage3 TempDir & "\solid_model.png", ImageWidth, ImageHeight, True, False, False, False, False, False, False, False, False
+        If Err.Number <> 0 Then
+            Err.Clear
+            Call LogMsg("WARN: solid_model SaveImage3 异常, 封面模型图本次缺失")
+        End If
+        On Error GoTo 0
         If FSO.FileExists(TempDir & "\solid_model.png") Then
             FSO.CopyFile TempDir & "\solid_model.png", ModeADir & "\solid_model.png", True
             FSO.CopyFile TempDir & "\solid_model.png", ModeBDir & "\solid_model.png", True
@@ -381,7 +407,13 @@ End If
     Viewer.Fit
     On Error GoTo 0
     Call SleepSec(1)
+    On Error Resume Next
     Viewer.SaveImage3 TempDir & "\mesh_model.png", ImageWidth, ImageHeight, True, False, False, False, False, False, False, False, False
+    If Err.Number <> 0 Then
+        Err.Clear
+        Call LogMsg("WARN: mesh_model SaveImage3 异常, 网格模型图本次缺失")
+    End If
+    On Error GoTo 0
     If FSO.FileExists(TempDir & "\mesh_model.png") Then
         FSO.CopyFile TempDir & "\mesh_model.png", ModeADir & "\mesh_model.png", True
         FSO.CopyFile TempDir & "\mesh_model.png", ModeBDir & "\mesh_model.png", True
@@ -613,25 +645,46 @@ For i = 0 To PlotsArray.length - 1
             If pType = "gif" Then
                 ' 充填动画导出 (帧数由配置指定)
                 Call LogMsg("导出充填动画 (帧数: " & NFrames & ")...")
+                ' 整段错误保护: GetAnimationType 对非动画结果会抛 COM 错误,
+                ' SaveAnimation 亦可能失败 —— 此前全部裸调用, 任一抛错即
+                ' 800A 中断全流程(后续结果图/材料曲线/Python 构建全不执行)
+                Dim AnimSkip
+                AnimSkip = False
+                On Error Resume Next
                 If PlotObj.GetAnimationType() = 0 Then
                     PlotObj.SetNumberOfAnimationFrames NFrames
                 Else
                     PlotObj.SetNumberOfFrames NFrames
                 End If
                 PlotObj.Regenerate
-                Call SleepSec(1)
+                If Err.Number <> 0 Then
+                    Err.Clear
+                    AnimSkip = True
+                    Call LogMsg("WARN: " & pKey & " 动画设置/重生成失败 (非动画结果或 COM 异常), 跳过 GIF 导出")
+                End If
+                On Error GoTo 0
+                If Not AnimSkip Then Call SleepSec(1)
                 
+                If Not AnimSkip Then
                 GifPath = TempDir & "\" & pKey & ".gif"
+                On Error Resume Next
                 Viewer.SaveAnimation GifPath
-                If FSO.FileExists(GifPath) Then
+                If Err.Number <> 0 Then
+                    Err.Clear
+                    On Error GoTo 0
+                    Call LogMsg("WARN: SaveAnimation 异常, 本次动画缺失: " & pKey)
+                ElseIf FSO.FileExists(GifPath) Then
+                    On Error GoTo 0
                     FSO.CopyFile GifPath, ModeADir & "\" & pKey & ".gif", True
                     FSO.CopyFile GifPath, ModeBDir & "\" & pKey & ".gif", True
                     Call LogMsg("充填动画已导出: " & pKey & ".gif")
                     ExportCount = ExportCount + 1
                 Else
+                    On Error GoTo 0
                     ' 导出失败必须如实计数/告警 (与 ExportMaterialPlotSafe 同口径),
                     ' 不然统计与 Python 回退链都拿"成功"当假象
                     Call LogMsg("WARN: SaveAnimation 未产出 " & pKey & ".gif, 本次动画缺失")
+                End If
                 End If
             Else
                 ' 普通结果图导出 (支持 1080P/2K)
@@ -772,7 +825,17 @@ PyCmd = "python """ & BaseDir & "\core\pptx_builder.py"" --config """ & ConfigPa
 Call LogMsg(" PPT : " & PyCmd)
 
 WshShell.Environment("PROCESS")("PYTHONIOENCODING") = "gbk"
+' 与 GUI 分支同款守卫: python 不在 PATH 时 Run 直接抛 800A, 先探测再给中文引导
+On Error Resume Next
 ret = WshShell.Run(PyCmd, 0, True)
+If Err.Number <> 0 Then
+    Err.Clear
+    On Error GoTo 0
+    MsgBox "未找到 python 命令: 请先安装 Python 并勾选 Add to PATH, 或手动运行 core\pptx_builder.py", 16, "错误"
+    Call LogMsg("ERROR: WshShell.Run python 失败 (PATH 无 python?)")
+    WScript.Quit 1
+End If
+On Error GoTo 0
 Call LogMsg("PPT : " & ret)
 
 Dim LastOutPath, OutMsg
@@ -838,6 +901,15 @@ Function SafeGetDbl(obj, propName, defaultVal)
         SafeGetDbl = CDbl(val)
     End If
     On Error GoTo 0
+End Function
+
+Function DblOrJsonNull(v, digits)
+    ' v<0 视为 COM 读取失败 -> JSON null (与 surface_area 的 MSAStr 同口径)
+    If v < 0 Then
+        DblOrJsonNull = "null"
+    Else
+        DblOrJsonNull = CStr(Round(v, digits))
+    End If
 End Function
 
 Sub DeleteIfPresent(dirPath, fileName)

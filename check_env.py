@@ -23,8 +23,16 @@ MARKERS_SLIDE1 = ("报告日期", "Moldflow")
 MARKERS_SLIDE2 = ("实体计数", "三角")
 
 
+MIN_PY = (3, 9)  # 语法/库特性下限(f-string 等); 本项目实测环境 3.14.6
+
+
 def check_python():
     v = f"{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}"
+    if sys.version_info < MIN_PY:
+        return False, [
+            f"Python {v} 低于最低要求 {'.'.join(map(str, MIN_PY))}"
+            " (本项目实测环境 3.14.6, 建议安装更新版本)"
+        ]
     return True, [f"Python {v} (本项目实测环境 3.14.6)"]
 
 
@@ -146,6 +154,8 @@ def main():
     ok, py_infos = check_python()
     for line in py_infos:
         print(f"[INFO] {line}")
+    if not ok:
+        all_problems.append(py_infos[0])  # 此前 ok 被丢弃, 版本过低静默放行
 
     problems, dep_infos = check_dependencies()
     for line in dep_infos:

@@ -142,7 +142,7 @@ def test_resolve_peaks_exported(tmp):
         "clamp_force": {"peak_value": 320.5, "peak_time": 6.224},
         "inj_pressure": {"peak_value": 21.45, "peak_time": 5.092},
     }
-    r = pb.resolve_peaks(peaks, {})
+    r = pb.resolve_peaks(peaks)
     assert r["clamp_force"] == (320.5, 6.224)
     assert r["inj_pressure"] == (21.45, 5.092)
 
@@ -153,14 +153,14 @@ def test_resolve_peaks_no_config_fallback(tmp):
         "clamp_force_settings": {"cae_max_ton": 300.0, "peak_time_sec": 5.5},
         "inj_pressure_settings": {"max_pressure_mpa": 20.0, "peak_time_sec": 4.8},
     }
-    r = pb.resolve_peaks({}, config)
+    r = pb.resolve_peaks({})
     assert r["clamp_force"] is None, (
         "config 陈旧峰值回退未清除 (换产品后臆造上个产品数据)"
     )
     assert r["inj_pressure"] is None
     # 值有效但时刻缺失 (GetMaxValue 回退路径) → 仍无法标注, 不得回退 config
     r2 = pb.resolve_peaks(
-        {"clamp_force": {"peak_value": 359.8, "peak_time": None}}, config
+        {"clamp_force": {"peak_value": 359.8, "peak_time": None}}
     )
     assert r2["clamp_force"] is None
 
@@ -629,7 +629,7 @@ def test_vbs_no_hardcoded_material(tmp):
 
 def test_resolve_peaks_none(tmp):
     """导出与 config 均无 → None (调用方跳过探针, 绝不臆造)。"""
-    r = pb.resolve_peaks({}, {})
+    r = pb.resolve_peaks({})
     assert r["clamp_force"] is None and r["inj_pressure"] is None
 
 
@@ -1508,6 +1508,73 @@ def test_vbs_root_copy_saveimage_guarded(tmp):
     assert "根目录副本截图异常" in vbs, "根目录副本 SaveImage 缺错误保护 (C-06)"
     seg = vbs.split("根目录副本: mode_a", 1)[1].split("On Error GoTo 0", 1)[0]
     assert "On Error Resume Next" in seg and "Viewer.SaveImage TempDir" in seg
+
+
+def test_slide9_clamp_force_backfill_unconditional(tmp):
+    """2026-09-13 审查回归: 锁模力表格回填必须在 fixed_plots 循环外无条件执行
+    (total_slides>=9 守卫)。此前嵌在循环内"某启用项恰好分配到第 9 页"才回填,
+    方案没有锁模力结果图时表格残留上个产品的旧吨位且缺失不登记。"""
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    assert "if total_slides >= 9:" in src, "缺 Slide 9 无条件守卫"
+    seg = src.split("锁模力表格回填 (无条件执行)", 1)[1].split("# ------------------ Slide 8", 1)[0]
+    assert "resolve_clamp_force" in seg and "clamp_label_kind" in seg
+    # 回填块必须在 for p_cfg in fixed_plots 循环之外(4 空格缩进, 非 8 空格循环体)
+    for line in seg.splitlines():
+        if line.strip().startswith("cae_ton, mach_ton = resolve_clamp_force"):
+            # 8 空格 = 函数级 if total_slides 守卫内; 12 空格 = 仍在
+            # fixed_plots 循环体的 if slide_no == 9 里 (P1 回归)
+            assert line.startswith("        cae_ton"), (
+                "锁模力回填仍在 fixed_plots 循环体内 (缩进过深)"
+            )
+            break
+    else:
+        raise AssertionError("未找到 resolve_clamp_force 调用")
+
+
+def test_plot_tabs_rebuild_clears_checkbuttons(tmp):
+    """2026-09-13 审查回归: _build_plot_tabs 重建前必须清空 plot_checkbuttons,
+    否则列表累积已销毁 widget, 标签/灰显更新遇 TclError 后续新 widget 全被跳过。"""
+    src = open(os.path.join(ROOT, "config_gui.py"), encoding="utf-8").read()
+    seg = src.split("def _build_plot_tabs", 1)[1].split("def populate_tab", 1)[0]
+    assert "self.plot_checkbuttons = {}" in seg, (
+        "_build_plot_tabs 未清空 plot_checkbuttons (P2 回归)"
+    )
+
+
+def test_gif_export_block_error_guarded(tmp):
+    """2026-09-13 审查回归: GIF 导出块 (GetAnimationType/SetNumberOf*Frames/
+    Regenerate/SaveAnimation) 必须有 On Error 保护——裸调用任一失败即 800A
+    中断全流程, 后续所有结果图/材料曲线/Python 构建全部不执行。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    seg = vbs.split("导出充填动画 (帧数", 1)[1].split("充填动画已导出", 1)[0]
+    assert seg.count("On Error Resume Next") >= 2, "GIF 设置/保存两段均需错误保护"
+    assert "AnimSkip" in vbs, "缺动画失败跳过旗标"
+
+
+def test_vbs_plots_length_guarded(tmp):
+    """2026-09-13 审查回归: ConfigObj.plots.length 前必须有守卫, 手改配置缺
+    plots 数组时给中文指引退出而非 424 运行时错误。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert "PlotsLen = ConfigObj.plots.length" in vbs
+    seg = vbs.split("If PlotsLen < 0 Then", 1)[1].split("End If", 1)[0]
+    assert "WScript.Quit 1" in seg and "MsgBox" in seg
+
+
+def test_mesh_summary_null_on_read_failure(tmp):
+    """2026-09-13 审查回归: 网格统计的体积/纵横比/匹配率 COM 读失败必须写
+    JSON null (与 surface_area 同口径), 写 0 会被 Python 端当真值渲染。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert "DblOrJsonNull" in vbs
+    for field in ("volume", "max_aspect_ratio", "ave_aspect_ratio", "match_ratio"):
+        assert '""%s"": " & DblOrJsonNull' % field in vbs, field
+
+
+def test_vbs_python_run_guarded_nongui(tmp):
+    """2026-09-13 审查回归: 非 GUI 路径调用 python 生成 PPT 也必须有 PATH
+    守卫 (与 GUI 分支同款), 失败给中文指引而非 800A。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    seg = vbs.split("ret = WshShell.Run(PyCmd, 0, True)", 1)[1].split("End If", 1)[0]
+    assert "MsgBox" in seg and "WScript.Quit 1" in seg, "PyCmd Run 无守卫"
 
 
 def test_gbk_tee_write_failure_no_recursion(tmp):

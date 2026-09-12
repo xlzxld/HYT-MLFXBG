@@ -471,7 +471,7 @@ def resolve_clamp_force(config, data_dir):
     return cae_ton, mach_ton
 
 
-def resolve_peaks(peaks, config=None):
+def resolve_peaks(peaks):
     """
     XY 探针峰值单源解析: 只认本次导出数据 (peak_values.json / *_curve_data.txt,
     由 VBS 从当前方案曲线导出)。值或时刻任一缺失 → None (跳过探针标注)。
@@ -707,7 +707,6 @@ def fit_picture_in_safe_box(
     box_top,
     box_w,
     box_h,
-    allow_cover_title=False,
 ):
     """
     自适应安全边界等比放大放置图片（几何由 compute_safe_box_fit 计算）：
@@ -748,7 +747,6 @@ def insert_or_replace_picture(
     box_top,
     box_w,
     box_h,
-    allow_cover_title=False,
     log_tag="",
 ):
     """把结果图放到页面上：页面已有图片 → 替换面积最大的主图 (保留模板布局);
@@ -766,7 +764,6 @@ def insert_or_replace_picture(
             box_top,
             box_w,
             box_h,
-            allow_cover_title,
         )
     geom = compute_safe_box_fit(new_image_path, box_left, box_top, box_w, box_h)
     if geom is None:
@@ -1141,7 +1138,7 @@ def render_material_dialog_cards(data_dir, manifest=None):
         draw1.text((box_x + 8, y + 4), str(val), fill=v_color, font=f_val)
 
     p1_path = os.path.join(data_dir, "material_basic.png")
-    im1.save(p1_path, quality=98)
+    im1.save(p1_path)
 
     # ---------------- 2. 渲染工艺参数卡片 (555 x 453) ----------------
     w2, h2 = 555, 453
@@ -1203,7 +1200,7 @@ def render_material_dialog_cards(data_dir, manifest=None):
     draw_proc_row(cur_y, "最大剪切速率", shear_r, "1/s", is_red=True)
 
     p2_path = os.path.join(data_dir, "material_process.png")
-    im2.save(p2_path, quality=98)
+    im2.save(p2_path)
     print(
         f"[Slide 3] Rendered authentic material cards: {os.path.basename(p1_path)} & {os.path.basename(p2_path)}"
     )
@@ -1498,7 +1495,6 @@ def build_single_report(
                     b_t,
                     b_w,
                     b_h,
-                    allow_cover_title,
                     log_tag=f"[Slide {slide_no}]",
                 ):
                     print(
@@ -1545,7 +1541,6 @@ def build_single_report(
                     b_t,
                     b_w,
                     b_h,
-                    allow_cover_title,
                     log_tag=f"[Slide {slide_no}]",
                 ):
                     # 占位图是 PNG, 模板 GIF 部件拒绝非 GIF 源 (blob 替换失败,
@@ -1586,7 +1581,6 @@ def build_single_report(
                     b_t,
                     b_w,
                     b_h,
-                    allow_cover_title,
                     log_tag=f"[Slide {slide_no}][{mode_tag}]",
                 )
                 tag_info = (
@@ -1609,35 +1603,39 @@ def build_single_report(
                     b_t,
                     b_w,
                     b_h,
-                    allow_cover_title,
                     log_tag=f"[Slide {slide_no}]",
                 )
 
-        # Slide 9: 自动回填注塑机最大锁模力与 CAE 最大锁模力
-        if slide_no == 9:
-            cae_ton, mach_ton = resolve_clamp_force(config, data_dir)
-            if cae_ton is None:
-                record_missing("锁模力: CAE 计算最大锁模力 (clamp_force_info.json)")
-            if mach_ton is None:
-                record_missing("锁模力: 注塑机最大吨位 (config machine_max_ton)")
+    # ------------------ Slide 9: 锁模力表格回填 (无条件执行) ------------------
+    # 此前嵌在 fixed_plots 循环内, 只有"某启用项恰好分配到第 9 页"才回填:
+    # 方案没有锁模力结果图时 (如只跑了 Flow 没跑保压), 表格会残留上个产品
+    # 的旧吨位数据且缺失不登记 —— 数据完整性红线的漏网之鱼。
+    # 与 Slide 8 材料范围回填同款 total_slides 守卫。
+    if total_slides >= 9:
+        slide9 = prs.slides[8]
+        cae_ton, mach_ton = resolve_clamp_force(config, data_dir)
+        if cae_ton is None:
+            record_missing("锁模力: CAE 计算最大锁模力 (clamp_force_info.json)")
+        if mach_ton is None:
+            record_missing("锁模力: 注塑机最大吨位 (config machine_max_ton)")
 
-            for shape in slide.shapes:
-                if shape.has_table:
-                    tbl = shape.table
-                    for row in tbl.rows:
-                        for c_idx, cell in enumerate(row.cells):
-                            kind = clamp_label_kind(cell.text)
-                            if kind and c_idx + 1 < len(row.cells):
-                                val = cae_ton if kind == "cae" else mach_ton
-                                update_table_cell(
-                                    row.cells[c_idx + 1],
-                                    f"{val:g}T" if val is not None else MISSING_TEXT,
-                                    "微软雅黑",
-                                    12,
-                                )
-                    print(
-                        f"[Slide 9] Auto-filled clamp force table: CAE={cae_ton if cae_ton is not None else '数据缺失'}, Machine={mach_ton if mach_ton is not None else '数据缺失'}"
-                    )
+        for shape in slide9.shapes:
+            if shape.has_table:
+                tbl = shape.table
+                for row in tbl.rows:
+                    for c_idx, cell in enumerate(row.cells):
+                        kind = clamp_label_kind(cell.text)
+                        if kind and c_idx + 1 < len(row.cells):
+                            val = cae_ton if kind == "cae" else mach_ton
+                            update_table_cell(
+                                row.cells[c_idx + 1],
+                                f"{val:g}T" if val is not None else MISSING_TEXT,
+                                "微软雅黑",
+                                12,
+                            )
+        print(
+            f"[Slide 9] Auto-filled clamp force table: CAE={cae_ton if cae_ton is not None else '数据缺失'}, Machine={mach_ton if mach_ton is not None else '数据缺失'}"
+        )
 
     # ------------------ Slide 8: 材料推荐成型范围回填 (真实材料数据) ------------------
     if total_slides >= 8:
@@ -1790,13 +1788,19 @@ def build_report(config_path, data_dir, output_path=None, mode=None, no_open=Fal
     build_material_info(data_dir)
 
     # 预先生成 100% 仿真官方属性与工艺卡片
-    mat_missing = render_material_dialog_cards(data_dir, manifest)
+    # 渲染异常(data_dir 只读/PIL 崩溃等)降级为登记缺失继续出报告, 不让整个
+    # build_report 在第一张卡片上就失败 (同函数内其余 IO 均有同款兜底)
+    try:
+        mat_missing = render_material_dialog_cards(data_dir, manifest)
+    except Exception as e:
+        print(f"[Slide 3][ERROR] 渲染材料属性/工艺卡片异常: {e}")
+        mat_missing = [f"材料卡片渲染失败: {e}"]
     for _m in mat_missing:
         record_missing(_m)
 
     # XY 探针峰值单源 (本次导出: peak_values.json + *_curve_data.txt 解析; 缺失登记)
     peaks_raw = load_peaks(data_dir) if load_peaks is not None else {}
-    resolved_peaks = resolve_peaks(peaks_raw, config)
+    resolved_peaks = resolve_peaks(peaks_raw)
     for curve, label in (
         ("clamp_force", "锁模力 XY"),
         ("inj_pressure", "注射位置处压力 XY"),

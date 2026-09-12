@@ -2,6 +2,8 @@ name: gate
 on:
   pull_request:
     branches: [master]
+  push:
+    branches: [master]  # 直推 master 也要过门禁(含 gitleaks), 此前仅 PR 触发可绕过
 
 jobs:
   verify:

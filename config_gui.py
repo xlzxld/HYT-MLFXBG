@@ -410,7 +410,9 @@ class ConfigApp:
         ttk.Label(quality_group, text="充填动画帧数:").grid(
             row=1, column=0, sticky=tk.W, pady=2
         )
-        self.frames_var = tk.IntVar(value=anim_cfg.get("frames", 50))
+        # `or 默认值`: 手写配置 "frames": null 时 .get(key, 默认) 返回 None,
+        # IntVar(value=None) 显示 0 → 保存 0 → VBS SetNumberOfAnimationFrames 0
+        self.frames_var = tk.IntVar(value=anim_cfg.get("frames") or 50)
         ttk.Spinbox(
             quality_group,
             from_=10,
@@ -430,7 +432,7 @@ class ConfigApp:
         ttk.Label(quality_group, text="动图播放间隔:").grid(
             row=2, column=0, sticky=tk.W, pady=2
         )
-        self.delay_var = tk.IntVar(value=anim_cfg.get("delay_ms", 80))
+        self.delay_var = tk.IntVar(value=anim_cfg.get("delay_ms") or 80)
         ttk.Spinbox(
             quality_group,
             from_=30,
@@ -552,6 +554,11 @@ class ConfigApp:
             self.notebook.forget(tab_id)
         for child in self.notebook.winfo_children():
             child.destroy()
+        # 清空已销毁 Checkbutton 的引用: 此前只销毁不清理, 二次重建后列表里
+        # 混着死 widget, _update_plot_label/_set_plot_hit_labels 遍历到第一个
+        # 死引用即 TclError, 后面新 widget 的更新被整体跳过 (pythonw 下用户
+        # 完全不可见)。plot_label_base 是纯文本缓存, 保留无害。
+        self.plot_checkbuttons = {}
         plots = self.cfg.get("plots", [])
         for p in plots:
             k = p["key"]
@@ -675,6 +682,8 @@ class ConfigApp:
             f"[P{sv.get().strip()}]" if sv and sv.get().strip().isdigit() else "[备选]"
         )
         for w in self.plot_checkbuttons.get(key, []):
+            if not w.winfo_exists():  # 防御: tab 重建瞬间的残留引用
+                continue
             w.configure(text=f"{prefix} {body}")
 
     # ---------------- 配置读写 ----------------
@@ -1053,6 +1062,8 @@ class ConfigApp:
         text = base if hit else f"{base}   （方案中未找到）"
         style = "TCheckbutton" if hit else "PlotMiss.TCheckbutton"
         for w in self.plot_checkbuttons.get(key, []):
+            if not w.winfo_exists():  # 防御: tab 重建瞬间的残留引用
+                continue
             w.configure(text=text)
             w.configure(style=style)
 
