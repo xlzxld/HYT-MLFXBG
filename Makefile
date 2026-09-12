@@ -7,8 +7,8 @@
 # 注意：本机 Windows 未安装 make，本地闭环请逐条执行 §2 三条命令
 #       （py_compile / tests/run_checks.py / ruff format --check + 冒烟）；
 #       `make verify` 由 .github/workflows/gate.yml 在 ubuntu runner 上调用。
-FMT_CHECK_CMD ?= python -m ruff format --check config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py
-LINT_CMD ?= python -m py_compile config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py check_env.py
+FMT_CHECK_CMD ?= python -m ruff format --check config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py check_env.py tests/run_checks.py
+LINT_CMD ?= python -m py_compile config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py check_env.py tests/run_checks.py
 TEST_CMD ?= python tests/run_checks.py
 BUILD_CMD ?= skip
 CHANGED ?=

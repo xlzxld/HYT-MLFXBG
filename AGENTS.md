@@ -32,8 +32,8 @@
 | 技术栈 | Python 3.14.6 + Pillow 12.3.0 + python-pptx 1.0.2 + numpy 2.5.2（GUI 为 stdlib tkinter）；VBS (GBK) `AutoReport.vbs` 驱动 Moldflow COM；无 manifest（裸源码探测） | — |
 | 构建 (Build) | 无 | — |
 | 测试 (Test) | `python tests/run_checks.py` | ✅ 回归 62/62 通过；端到端冒烟（人工时跑）：`python core/pptx_builder.py --config report_config.json --data-dir temp --mode B --no-open --output temp\smoke.pptx` 输出 [SUCCESS]；已知豁免清单内且非本次引入的失败不阻断，但须列出 |
-| 静态检查 (Lint) | `python -m py_compile config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py check_env.py` | ✅ 0 错误 0 警告（基线豁免同上） |
-| 格式化 (Format) | `python -m ruff format --check config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py` | ✅ 对本次改动文件执行，0 差异（ruff 0.16.6） |
+| 静态检查 (Lint) | `python -m py_compile config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py check_env.py tests/run_checks.py` | ✅ 0 错误 0 警告（基线豁免同上） |
+| 格式化 (Format) | `python -m ruff format --check config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py check_env.py tests/run_checks.py` | ✅ 对本次改动文件执行，0 差异（ruff 0.16.6） |
 | 聚合门禁 (闭环入口) | 无（v3 起由技能目录 `tsc.py verify --project <本项目>` 承担，不再依赖 make/Makefile） | ✅ 四段逐段退出码 0 |
 | 主干分支 | master | ✅ 禁止未经 Pull Request 直接向主干提交 |
 | 已知豁免清单 | 无 | 唯一合法的基线失败白名单，新增须走 PR；按 `命令:条目描述` 逐条登记，便于机器比对与复核 |
