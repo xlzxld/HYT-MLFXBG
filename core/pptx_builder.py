@@ -2,6 +2,7 @@ import io
 import os
 import sys
 import json
+import time
 import datetime
 import argparse
 from pptx import Presentation
@@ -723,9 +724,9 @@ def fit_picture_in_safe_box(
 
     pic_shape.left, pic_shape.top, pic_shape.width, pic_shape.height = geom
 
-    # 替换图像二进制
-    replace_picture_blob(pic_shape, new_image_path)
-    return True
+    # 替换图像二进制 —— 必须回传替换结果: 失败时(如 GIF 部件拒绝非 GIF 源)
+    # 只改了几何、不换内容, 返回 True 会让调用方把旧图当新图报告成功。
+    return replace_picture_blob(pic_shape, new_image_path)
 
 
 def get_main_picture(slide):
@@ -1047,7 +1048,11 @@ def render_material_dialog_cards(data_dir, manifest=None):
     fiber = text_val("fiber_filler", "纤维/填充物")
 
     if manufacturer != MISSING_TEXT and trade_name != MISSING_TEXT:
-        link = f"https://www.google.com/search?q={manufacturer}+{trade_name}"
+        from urllib.parse import quote
+
+        link = "https://www.google.com/search?q=" + quote(
+            f"{manufacturer} {trade_name}"
+        )
     else:
         link = MISSING_TEXT
 
@@ -1346,7 +1351,10 @@ def build_single_report(
 
         # 替换右侧网格统计数据（严格保留模板原生空行排版与坐标，Arial 8pt，空行分明，杜绝挤压）
         formatted_lines, mesh_missing = get_formatted_mesh_text(data_dir)
-        MISSING_FIELDS.extend(mesh_missing)
+        # 逐条 record_missing(带去重): BOTH 模式 build_single_report 跑两遍,
+        # 直接 extend 会让 missing_fields.json 出现重复项、计数虚高
+        for _m in mesh_missing:
+            record_missing(_m)
         for shape in s2.shapes:
             if shape.has_text_frame and (
                 "实体计数" in shape.text_frame.text
@@ -1384,7 +1392,17 @@ def build_single_report(
                 )
                 mat_img = ph_path
             if pic is not None:
-                replace_picture_blob(pic, mat_img)
+                # v: 替换结果必须检查 —— 失败时登记缺失, 绝不让模板里上个
+                # 产品的材料图冒充本次结果; 成功后按新图原生比例等比适配
+                # 原形状框并居中(新旧图宽高比不同时防拉伸变形)。
+                if replace_picture_blob(pic, mat_img):
+                    geom = compute_safe_box_fit(
+                        mat_img, pic.left, pic.top, pic.width, pic.height
+                    )
+                    if geom is not None:
+                        pic.left, pic.top, pic.width, pic.height = geom
+                else:
+                    record_missing(f"材料图替换失败: {MATERIAL_QUADRANT_LABELS[q]}")
             else:
                 b_l, b_t, b_w, b_h = MATERIAL_QUADRANT_BOXES[q]
                 geom = compute_safe_box_fit(mat_img, b_l, b_t, b_w, b_h)
@@ -1404,6 +1422,21 @@ def build_single_report(
 
     mode_sub = f"mode_{mode.lower()}"
     mode_dir = os.path.join(data_dir, mode_sub)
+
+    # 撞页检测: GUI 保存时有前置校验, 但手改配置/外部入口绕过 GUI 时这里
+    # 是唯一防线 —— 两个启用项同页时, 后放的主图会把先放的顶掉 (静默丢图)。
+    from collections import Counter as _Counter
+
+    _page_counts = _Counter(p["slide"] for p in fixed_plots if p.get("slide"))
+    for _slide, _n in sorted(_page_counts.items()):
+        if _n > 1:
+            _dups = [p.get("key", "?") for p in fixed_plots if p.get("slide") == _slide]
+            record_missing(
+                f"结果图撞页: 第 {_slide} 页被 {len(_dups)} 项同时占用 ({', '.join(_dups)}), 仅最后一项可见"
+            )
+            print(
+                f"[WARN] 第 {_slide} 页配置了多个结果图 ({', '.join(_dups)}), 相互覆盖 — 请改页码或取消勾选"
+            )
 
     for p_cfg in fixed_plots:
         slide_no = p_cfg["slide"]
@@ -1429,12 +1462,12 @@ def build_single_report(
         b_l, b_t, b_w, b_h, allow_cover_title = safe_box_cfg
 
         if p_type == "gif":
-            # GIF 动图 (Slide 4 充填时间)
+            # GIF 动图 (Slide 4 充填时间)。查找链只认本次配置的 key ——
+            # 曾有硬编码 filling_animation.gif 兜底: 本次导出失败时会把
+            # 上个产品遗留的旧动画冒充本次结果 (数据完整性红线, 已移除)。
             gif_path = os.path.join(data_dir, f"{key}.gif")
             if not os.path.exists(gif_path):
                 gif_path = os.path.join(mode_dir, f"{key}.gif")
-            if not os.path.exists(gif_path):
-                gif_path = os.path.join(data_dir, "filling_animation.gif")
 
             if os.path.exists(gif_path):
                 try:
@@ -1505,7 +1538,7 @@ def build_single_report(
                     f"[Slide {slide_no}][ERROR] GIF not found for {key}, 使用缺失占位图"
                 )
                 ph = ensure_missing_plot_placeholder(data_dir)
-                insert_or_replace_picture(
+                if not insert_or_replace_picture(
                     slide,
                     ph,
                     b_l,
@@ -1514,7 +1547,22 @@ def build_single_report(
                     b_h,
                     allow_cover_title,
                     log_tag=f"[Slide {slide_no}]",
-                )
+                ):
+                    # 占位图是 PNG, 模板 GIF 部件拒绝非 GIF 源 (blob 替换失败,
+                    # 旧动画原样保留) —— 此时删除旧主图形状、按占位图新插,
+                    # 绝不让上一次运行的动画混入本次报告。
+                    stale = get_main_picture(slide)
+                    if stale is not None:
+                        stale._element.getparent().remove(stale._element)
+                        geom = compute_safe_box_fit(ph, b_l, b_t, b_w, b_h)
+                        slide.shapes.add_picture(ph, *(geom or (b_l, b_t, b_w, b_h)))
+                        print(
+                            f"[Slide {slide_no}] GIF 部件拒绝占位图, 已删除旧动画并插入占位图"
+                        )
+                    else:
+                        record_missing(
+                            f"充填动画占位失败: {key} (第 {slide_no} 页 GIF 部件且无旧形状)"
+                        )
         else:
             # 普通云图图片 (Slide 5 ~ 16)
             # 优先从该模式专属子目录寻找
@@ -1644,6 +1692,7 @@ def build_single_report(
 
     output_path = os.path.abspath(output_path)
     # 保存 PPTX（若文件已被独占打开，则自动追加时间戳，避免 PermissionError）
+    # 时间戳带毫秒: 同一秒内 5 次重试曾全部同名, 等价于只重试 1 次。
     saved = False
     original_path = output_path
     counter = 0
@@ -1653,12 +1702,21 @@ def build_single_report(
             saved = True
         except PermissionError:
             counter += 1
+            if counter < 5:
+                time.sleep(0.5)  # 等 PowerPoint 释放句柄
             base, ext = os.path.splitext(original_path)
-            time_suffix = datetime.datetime.now().strftime("%H%M%S")
+            time_suffix = datetime.datetime.now().strftime("%H%M%S%f")[:-3]
             output_path = f"{base}_{time_suffix}{ext}"
             print(
                 f"[Notice] File locked by PowerPoint, saving as: {os.path.basename(output_path)}"
             )
+
+    if not saved:
+        # 5 次重试全部失败: 不存在任何已写盘的报告。曾在此打印 [SUCCESS]
+        # 并返回从未落盘的路径, VBS 会把这个假路径弹窗给用户。
+        raise RuntimeError(
+            f"报告保存失败 (重试 {counter} 次均 PermissionError): {original_path}"
+        )
 
     print(f"\n[SUCCESS] 【{mode_tag}】报告成功生成:")
     print(f"  {output_path}\n")
@@ -1733,7 +1791,8 @@ def build_report(config_path, data_dir, output_path=None, mode=None, no_open=Fal
 
     # 预先生成 100% 仿真官方属性与工艺卡片
     mat_missing = render_material_dialog_cards(data_dir, manifest)
-    MISSING_FIELDS.extend(mat_missing)
+    for _m in mat_missing:
+        record_missing(_m)
 
     # XY 探针峰值单源 (本次导出: peak_values.json + *_curve_data.txt 解析; 缺失登记)
     peaks_raw = load_peaks(data_dir) if load_peaks is not None else {}

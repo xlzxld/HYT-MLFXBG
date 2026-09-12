@@ -15,7 +15,11 @@ Dim Names(), N
 N = 0
 ReDim Names(255)
 
-' 连接 (与 AutoReport.vbs 同序: SAInstance → GetObject → CreateObject)
+' 连接 (只连已运行的实例: SAInstance → GetObject)。
+' 注意: 不允许 CreateObject("Synergy.Synergy") —— 那会启动一个新 Moldflow
+' 进程。本脚本自称"纯只读", 配置界面启动 600ms 后即自动跑一次, 若在这里
+' 拉起 Moldflow, 用户只开个配置界面就会等来一个 Moldflow 启动 (且 GUI 的
+' 30s 超时只杀 wscript, 杀不掉已被拉起的 Moldflow)。
 Set Synergy = Nothing
 saEnv = WshShell.ExpandEnvironmentStrings("%SAInstance%")
 On Error Resume Next
@@ -25,7 +29,6 @@ If saEnv <> "" And saEnv <> "%SAInstance%" Then
     If Not Getter Is Nothing Then Set Synergy = Getter.GetSASynergy
 End If
 If Synergy Is Nothing Then Set Synergy = GetObject(, "Synergy.Synergy")
-If Synergy Is Nothing Then Set Synergy = CreateObject("Synergy.Synergy")
 On Error GoTo 0
 If Synergy Is Nothing Then
     WriteJson "", N, Array(), "未连接到 Moldflow (请先打开 Moldflow)"

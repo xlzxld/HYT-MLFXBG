@@ -4,17 +4,33 @@ from PIL import Image
 
 
 # 充填动画色域广 (温度彩虹), 固定用中速中质量的自适应法; 显式常量而非误用重采样枚举
+# 注: Pillow 的 Image.Quantize.MEDIANCUT == 0; 旧版无枚举时回退数值 0
+# (曾误写 2 = FASTOCTREE, 与注释意图不符, 现代 Pillow 恒走枚举分支无实际影响)
 _QUANT_METHOD = getattr(Image, "Quantize", None)
-_QUANT_METHOD = _QUANT_METHOD.MEDIANCUT if _QUANT_METHOD else 2
+_QUANT_METHOD = _QUANT_METHOD.MEDIANCUT if _QUANT_METHOD else 0
 
 
-def _load_frames(gif_path):
+def _load_frames(gif_path, max_height=None):
     # 显式关闭句柄: Windows 下同路径回写会被未关闭的文件锁挡住 (WinError 32)
+    # max_height 下采样在载入时逐帧完成 —— 曾先全分辨率载入全部帧再统一缩放,
+    # 2K/60 帧的峰值内存可超 1GB (每帧 RGB ~11MB, 量化副本还要再翻一倍)
     frames = []
     with Image.open(gif_path) as im:
+        scale = 1.0
+        if max_height and im.height > max_height:
+            scale = max_height / im.height
         try:
             while True:
-                frames.append(im.copy().convert("RGB"))
+                fr = im.copy()
+                if scale < 1.0:
+                    fr = fr.resize(
+                        (
+                            max(1, int(fr.width * scale)),
+                            max(1, int(fr.height * scale)),
+                        ),
+                        Image.Resampling.LANCZOS,
+                    )
+                frames.append(fr.convert("RGB"))
                 im.seek(im.tell() + 1)
         except EOFError:
             pass
@@ -88,23 +104,11 @@ def optimize_existing_gif(
         output_gif_path = input_gif_path
 
     try:
-        frames = _load_frames(input_gif_path)
+        frames = _load_frames(input_gif_path, max_height=max_height)
         if frames:
             if max_frames and len(frames) > max_frames:
                 step = len(frames) / max_frames
                 frames = [frames[int(i * step)] for i in range(max_frames)]
-            if max_height and frames[0].height > max_height:
-                scale = max_height / frames[0].height
-                frames = [
-                    f.resize(
-                        (
-                            max(1, int(f.width * scale)),
-                            max(1, int(f.height * scale)),
-                        ),
-                        Image.Resampling.LANCZOS,
-                    )
-                    for f in frames
-                ]
             palette = _global_palette(frames)
             quant_frames = [
                 f.quantize(palette=palette, dither=Image.Dither.FLOYDSTEINBERG)

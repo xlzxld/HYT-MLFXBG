@@ -130,11 +130,17 @@ def check_template(template_path):
 
 
 def main():
-    config_path = (
-        sys.argv[sys.argv.index("--config") + 1]
-        if "--config" in sys.argv
-        else os.path.join(REPO_ROOT, "report_config.json")
-    )
+    argv = sys.argv[1:]
+    if "--config" in argv:
+        i = argv.index("--config")
+        # --config 在末位且没给值时, 直接取 argv[i+1] 会 IndexError
+        if i + 1 < len(argv) and not argv[i + 1].startswith("--"):
+            config_path = argv[i + 1]
+        else:
+            print("[ERROR] --config 需要一个配置文件路径参数")
+            sys.exit(2)
+    else:
+        config_path = os.path.join(REPO_ROOT, "report_config.json")
     all_problems = []
 
     ok, py_infos = check_python()

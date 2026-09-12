@@ -64,11 +64,16 @@ SLIDE_MAX = 32
 
 
 def load_config():
-    """读取配置; 损坏/缺失 → ({}, 错误信息), 绝不让 GUI 静默崩溃。"""
+    """读取配置; 损坏/缺失 → ({}, 错误信息), 绝不让 GUI 静默崩溃。
+
+    编码必须用 utf-8-sig: 用户用记事本另存配置可能带 BOM, VBS/Python 主链路
+    (check_env / pptx_builder) 都按 utf-8-sig 读; 这里若按 utf-8 读会把带 BOM
+    的完好配置判"损坏", 用户随后点保存即把全部既有配置覆盖为空默认。
+    """
     if not os.path.exists(CONFIG_FILE):
         return {}, None
     try:
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        with open(CONFIG_FILE, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
         if not isinstance(data, dict):
             return {}, "配置根元素不是对象"
@@ -78,8 +83,11 @@ def load_config():
 
 
 def save_config(cfg):
-    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+    # 原子写: 先写临时文件再 os.replace, 中途断电/崩溃不会留下半截配置
+    tmp = CONFIG_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, CONFIG_FILE)
 
 
 def find_duplicate_slides(plots):
@@ -410,6 +418,11 @@ class ConfigApp:
             increment=5,
             textvariable=self.frames_var,
             width=8,
+            validate="key",
+            validatecommand=(
+                self.root.register(lambda v: v.isdigit() or v == ""),
+                "%P",
+            ),
         ).grid(row=1, column=1, sticky=tk.W, padx=5)
         ttk.Label(quality_group, text="(推荐 30~80 帧)").grid(
             row=1, column=2, sticky=tk.W
@@ -425,6 +438,11 @@ class ConfigApp:
             increment=10,
             textvariable=self.delay_var,
             width=8,
+            validate="key",
+            validatecommand=(
+                self.root.register(lambda v: v.isdigit() or v == ""),
+                "%P",
+            ),
         ).grid(row=2, column=1, sticky=tk.W, padx=5)
         ttk.Label(quality_group, text="ms/帧 (默认 80)").grid(
             row=2, column=2, sticky=tk.W
@@ -719,8 +737,18 @@ class ConfigApp:
 
         if "animation_settings" not in self.cfg:
             self.cfg["animation_settings"] = {}
-        self.cfg["animation_settings"]["frames"] = self.frames_var.get()
-        self.cfg["animation_settings"]["delay_ms"] = self.delay_var.get()
+        # IntVar.get() 对非数字输入抛 TclError (pythonw 下不可见, 按钮"没反应");
+        # Spinbox validate 已拦手动输入, 这里再兜底一次防配置带进来的脏值
+        try:
+            frames_val = int(self.frames_var.get())
+        except Exception:
+            frames_val = 50
+        try:
+            delay_val = int(self.delay_var.get())
+        except Exception:
+            delay_val = 80
+        self.cfg["animation_settings"]["frames"] = frames_val
+        self.cfg["animation_settings"]["delay_ms"] = delay_val
 
         # 注塑机吨位: 本次产品实际机台规格; 留空/非法 → null (报告标数据缺失, 绝不沿用旧值)
         try:

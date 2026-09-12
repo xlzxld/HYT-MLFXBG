@@ -1005,6 +1005,15 @@ def test_vbs_syntax_compile(tmp):
        VBScript 先整体编译再执行, 任何语法错误都会在执行 Quit 前报出, 纯语法检查不跑业务。
     """
     import subprocess
+    import sys
+
+    # 编译门禁依赖 Windows 专有的 cscript —— CI 在 ubuntu 上没有,
+    # FileNotFoundError 会被 main() 捕获判 FAIL, 门禁恒红。非 Windows 明确跳过。
+    if sys.platform != "win32":
+        print(
+            "[SKIP] test_vbs_syntax_compile: 非 Windows 平台无 cscript, 跳过 VBS 编译门禁"
+        )
+        return
 
     vbs_path = os.path.join(ROOT, "AutoReport.vbs")
     body = open(vbs_path, "rb").read().decode("gbk")
@@ -1571,6 +1580,128 @@ def test_xy_detection_strict_underscore(tmp):
     assert '"_xy" in base_name' in src, "is_xy 判据缺失"
     fn = src.split("def locate_curve_peak", 1)[1].split("\ndef ", 1)[0]
     assert "arr = np.array(im)" not in fn, "locate_curve_peak 仍存在未用变量 arr"
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-12 全面审查修复回归:
+#   A. 数据完整性红线闭环 (GIF 陈旧产物/blob 替换失败冒充成功/保存假成功)
+#   B. CI 门禁平台守卫、VBS 配置守卫与解析安全、GUI 编码一致性
+#   断言以静态特征为主, 与本文件既有风格一致。
+# ---------------------------------------------------------------------------
+def test_gif_stale_cleanup_and_fallback_removed(tmp):
+    """S-4: GIF 陈旧产物清理必须覆盖 mode_a/mode_b (三处都写就三处都清);
+    Python 侧不得再用硬编码 filling_animation.gif 兜底 (上个产品的动画
+    会冒充本次结果)。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert 'DeleteIfPresent ModeADir, kk & ".gif"' in vbs, (
+        "VBS 陈旧清理缺 ModeADir 的 .gif"
+    )
+    assert 'DeleteIfPresent ModeBDir, kk & ".gif"' in vbs, (
+        "VBS 陈旧清理缺 ModeBDir 的 .gif"
+    )
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    assert '"filling_animation.gif"' not in src, (
+        "pptx_builder 仍有硬编码 filling_animation.gif 兜底 (陈旧动画混入通道)"
+    )
+
+
+def test_fit_picture_returns_blob_result(tmp):
+    """S-2: fit_picture_in_safe_box 必须回传 replace_picture_blob 的结果;
+    旧写法忽略返回值恒返回 True, GIF 部件拒绝非 GIF 源时旧图冒充新图。"""
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    assert "return replace_picture_blob(pic_shape, new_image_path)" in src, (
+        "fit_picture_in_safe_box 未回传 blob 替换结果"
+    )
+    assert (
+        "replace_picture_blob(pic_shape, new_image_path)\n    return True" not in src
+    ), "旧的'调用后恒 return True'写法残留"
+
+
+def test_gif_placeholder_drops_stale_animation(tmp):
+    """S-2 补充: GIF 页占位分支必须检查放置结果, 失败时删除旧动画形状重插,
+    不允许静默保留上一次运行动画。"""
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    assert "GIF 部件拒绝占位图" in src, "GIF 占位失败兜底(删旧动画)缺失"
+
+
+def test_pptx_save_failure_raises(tmp):
+    """S-3: 保存重试耗尽必须 raise (退出码 2), 不得打印 SUCCESS 并返回
+    从未落盘的路径; 重试时间戳须带毫秒 (同秒重试曾全部同名)。"""
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    assert "if not saved:" in src, "保存循环后未检查 saved"
+    assert "raise RuntimeError" in src, "保存失败未 raise"
+    assert "%H%M%S%f" in src, "重试文件名时间戳未带毫秒"
+
+
+def test_mesh_summary_written_for_all_mesh_types(tmp):
+    """M-1: mesh_summary.json 的写出不得嵌在网格类型分类的 ElseIf 链里
+    (3D/中性面方案曾永远不写, Slide 2 统计全缺失)。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert "ElseIf Not MeshSummary Is Nothing Then" not in vbs, (
+        "网格统计写出仍在 ElseIf 链内"
+    )
+    assert "If Not MeshSummary Is Nothing Then" in vbs, "网格统计无条件写出块缺失"
+
+
+def test_vbs_config_field_guards(tmp):
+    """M-8: 手改配置缺字段时 CLng/CBool 直接抛 800A; 必须有默认值+On Error 守卫。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    guard = "配置缺字段守卫"
+    assert guard in vbs, "配置缺字段守卫注释缺失"
+    assert vbs.count("On Error Resume Next") >= 3, "守卫区不足"
+
+
+def test_vbs_parsejson_prefers_native_json(tmp):
+    """M-2: parseJSON 必须优先 JSON.parse (不执行代码), eval 仅作老引擎回退。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert "JSON.parse" in vbs, "parseJSON 未优先使用原生 JSON.parse"
+
+
+def test_list_plots_does_not_launch_moldflow(tmp):
+    """M-3: list_plots.vbs 自称纯只读, 不得 CreateObject 拉起新 Moldflow 进程
+    (GUI 启动 600ms 后即自动跑一次)。"""
+    vbs = open(os.path.join(ROOT, "list_plots.vbs"), "rb").read().decode("gbk")
+    assert "Set Synergy = CreateObject" not in vbs, (
+        "list_plots.vbs 仍会启动新 Moldflow 进程"
+    )
+
+
+def test_gui_load_config_utf8_sig(tmp):
+    """M-4: GUI 读配置必须 utf-8-sig —— 与 VBS/主链路一致; utf-8 读 BOM 配置
+    会判损坏, 用户点保存即把既有配置覆盖为空默认。"""
+    src = open(os.path.join(ROOT, "config_gui.py"), encoding="utf-8").read()
+    assert 'open(CONFIG_FILE, "r", encoding="utf-8-sig")' in src, (
+        "load_config 未用 utf-8-sig"
+    )
+
+
+def test_missing_fields_registration_deduped(tmp):
+    """M-6: BOTH 模式下 mesh/material 缺失清单被 build_single_report 跑两遍,
+    直接 extend 会重复登记; 必须走带去重的 record_missing。"""
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    assert "MISSING_FIELDS.extend(mesh_missing)" not in src
+    assert "MISSING_FIELDS.extend(mat_missing)" not in src
+
+
+def test_slide_conflict_detected_in_builder(tmp):
+    """P-10: builder 侧必须做撞页检测 (GUI 之外的手改配置无任何告警曾静默丢图)。"""
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    assert "结果图撞页" in src, "builder 撞页检测缺失"
+
+
+def test_gif_load_frames_downscales_on_load(tmp):
+    """M-5: 帧下采样必须在载入时逐帧完成 (max_height 传入 _load_frames),
+    先全分辨率载入再缩放 2K/60 帧峰值内存可超 1GB。"""
+    src = open(os.path.join(ROOT, "core", "gif_enhancer.py"), encoding="utf-8").read()
+    assert "_load_frames(input_gif_path, max_height=max_height)" in src, (
+        "optimize_existing_gif 未在载入时下采样"
+    )
+
+
+def test_main_picture_check_for_vbs_python_path(tmp):
+    """P-8: VBS 调 python 必须有 PATH 缺失守卫 (未处理 800A 对话框)。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert "PATH 无 python?" in vbs, "python PATH 守卫缺失"
 
 
 def main():

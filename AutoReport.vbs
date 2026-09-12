@@ -48,16 +48,40 @@ End If
 ConfigJsonStr = ReadUtf8TextFile(ConfigPath)
 
 Set HTML = CreateObject("htmlfile")
-HTML.parentWindow.execScript "function parseJSON(s) { return eval('(' + s + ')'); } function getArrayItem(arr, i) { return arr[i]; }", "JScript"
+' JSON 解析: 优先原生 JSON.parse (安全, 不执行代码); 老引擎没有 JSON 时
+' 才回退 eval (旧行为)。report_config.json 的 plot_name 来自 Moldflow 结果
+' 清单, 畸形/恶意名字曾被当 JScript 求值 —— 有 JSON.parse 的机器上此面已消除。
+HTML.parentWindow.execScript "function parseJSON(s) { if (typeof JSON !== 'undefined' && JSON.parse) { try { return JSON.parse(s); } catch (e) {} } return eval('(' + s + ')'); } function getArrayItem(arr, i) { return arr[i]; }", "JScript"
 Set ConfigObj = HTML.parentWindow.parseJSON(ConfigJsonStr)
 
 ' 弹出配置界面 (可选, 由 show_gui_before_run 控制)
 ' 由 GUI 拉起时跳过 (GUI 自己会拉起本脚本, 防双重运行)
 Dim fromGui
 fromGui = WshShell.ExpandEnvironmentStrings("%MLFXBG_FROM_GUI%")
-If CBool(ConfigObj.show_gui_before_run) And fromGui <> "1" Then
+' 配置缺字段守卫: 手改配置缺 show_gui_before_run 时按 False 处理, 不再抛 800A
+Dim showGui
+showGui = False
+On Error Resume Next
+showGui = CBool(ConfigObj.show_gui_before_run)
+If Err.Number <> 0 Then
+    Err.Clear
+    showGui = False
+End If
+On Error GoTo 0
+If showGui And fromGui <> "1" Then
     Call LogMsg("弹出配置界面...")
-    ret = WshShell.Run("python """ & BaseDir & "\config_gui.py""", 1, True)
+    ' python 不在 PATH 时 Run 会直接抛 800A 未处理错误, 用户只看到天书弹窗;
+' 先探测再给中文引导
+On Error Resume Next
+ret = WshShell.Run("python """ & BaseDir & "\config_gui.py""", 1, True)
+If Err.Number <> 0 Then
+    Err.Clear
+    On Error GoTo 0
+    MsgBox "未找到 python 命令: 请先安装 Python 并勾选 Add to PATH, 或手动运行 config_gui.py", 16, "错误"
+    Call LogMsg("ERROR: WshShell.Run python 失败 (PATH 无 python?)")
+    WScript.Quit 1
+End If
+On Error GoTo 0
     ConfigJsonStr = ReadUtf8TextFile(ConfigPath)
     Set ConfigObj = HTML.parentWindow.parseJSON(ConfigJsonStr)
 
@@ -69,11 +93,23 @@ If CBool(ConfigObj.show_gui_before_run) And fromGui <> "1" Then
     End If
 End If
 
+' 配置缺字段守卫: 手改配置缺字段/类型错时回退默认值并告警, 不再抛 800A 崩溃
+ImageWidth = 1920
+ImageHeight = 1080
+KeepView = True
+NFrames = 60
+DelayMs = 80
+On Error Resume Next
 ImageWidth = CLng(ConfigObj.image_settings.width)
 ImageHeight = CLng(ConfigObj.image_settings.height)
 KeepView = CBool(ConfigObj.image_settings.keep_view)
 NFrames = CLng(ConfigObj.animation_settings.frames)
 DelayMs = CLng(ConfigObj.animation_settings.delay_ms)
+If Err.Number <> 0 Then
+    Call LogMsg("WARN: 配置 image_settings/animation_settings 缺字段或类型错, 部分项已回退默认值")
+    Err.Clear
+End If
+On Error GoTo 0
 
 ScreenshotMode = "B"
 On Error Resume Next
@@ -102,6 +138,11 @@ For i = 0 To ConfigObj.plots.length - 1
         DeleteIfPresent TempDir, kk & ".gif"
         DeleteIfPresent ModeADir, kk & ".png"
         DeleteIfPresent ModeBDir, kk & ".png"
+        ' GIF 导出后是三处都写(TempDir + ModeADir/ModeBDir), 清理也必须
+        ' 三处都清 —— 只清 TempDir 时, 本次 SaveAnimation 失败会让 Python
+        ' 回退链命中上次运行遗留的同名 GIF (上个产品的动画混入本次报告)。
+        DeleteIfPresent ModeADir, kk & ".gif"
+        DeleteIfPresent ModeBDir, kk & ".gif"
         DeleteIfPresent ModeBDir, "scale_" & kk & ".png"
         DeleteIfPresent ModeBDir, "model_" & kk & ".png"
     End If
@@ -221,7 +262,12 @@ If InStr(MeshTypeRaw, "3D") > 0 Or InStr(MeshTypeRaw, "TET") > 0 Then
     DetectedMeshType = "3D"
 ElseIf InStr(MeshTypeRaw, "MID") > 0 Then
     DetectedMeshType = "Midplane"
-ElseIf Not MeshSummary Is Nothing Then
+End If
+
+' 网格统计采集与 JSON 写出对三种网格类型(双层面/3D/中性面)一律执行 ——
+' 曾嵌在类型分类 ElseIf 链里: 3D/中性面方案永远不写 mesh_summary.json,
+' Slide 2 网格统计全部渲染为数据缺失。MeshSummary 为 Nothing 才跳过。
+If Not MeshSummary Is Nothing Then
     Dim MatchVal, RecipVal, MVol, TriCount, NodeCount, FreeE, ManiE, NonManiE, UnorientE, InterE, OverE
     TriCount = SafeGetLong(MeshSummary, "TrianglesCount", 0)
     NodeCount = SafeGetLong(MeshSummary, "NodesCount", 0)
@@ -580,9 +626,13 @@ For i = 0 To PlotsArray.length - 1
                 If FSO.FileExists(GifPath) Then
                     FSO.CopyFile GifPath, ModeADir & "\" & pKey & ".gif", True
                     FSO.CopyFile GifPath, ModeBDir & "\" & pKey & ".gif", True
+                    Call LogMsg("充填动画已导出: " & pKey & ".gif")
+                    ExportCount = ExportCount + 1
+                Else
+                    ' 导出失败必须如实计数/告警 (与 ExportMaterialPlotSafe 同口径),
+                    ' 不然统计与 Python 回退链都拿"成功"当假象
+                    Call LogMsg("WARN: SaveAnimation 未产出 " & pKey & ".gif, 本次动画缺失")
                 End If
-                Call LogMsg("充填动画已导出: " & pKey & ".gif")
-                ExportCount = ExportCount + 1
             Else
                 ' 普通结果图导出 (支持 1080P/2K)
                 ' ---------------- 方案 A: 视口真实抓取 (含完整彩条标尺) ----------------
@@ -843,6 +893,13 @@ End Sub
 Sub LogMsg(msg)
     On Error Resume Next
     Dim f
+    ' 超 5MB 轮转到 run.log.old (单文件保留最近一段), 防长期使用无限增长
+    If FSO.FileExists(TempDir & "\run.log") Then
+        If FSO.GetFile(TempDir & "\run.log").Size > 5 * 1024 * 1024 Then
+            If FSO.FileExists(TempDir & "\run.log.old") Then FSO.DeleteFile TempDir & "\run.log.old", True
+            FSO.MoveFile TempDir & "\run.log", TempDir & "\run.log.old"
+        End If
+    End If
     Set f = FSO.OpenTextFile(TempDir & "\run.log", 8, True)
     f.WriteLine Now & " - " & msg
     f.Close

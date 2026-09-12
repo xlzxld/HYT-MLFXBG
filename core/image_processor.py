@@ -1013,10 +1013,15 @@ def process_all_mode_b_plots(
         b = os.path.basename(m_path)
         all_keys.add(b[len("model_") : -len(".png")])
 
-    # 也检查 mode_a 中的 key
+    # 也检查 mode_a 中的 key (排除 VBS 直接拷入的非结果图: solid_model/
+    # mesh_model 走封面/网格专用链路, ref_* 是参照物 —— 它们没有 scale_/
+    # model_ 对, 进来只会走"视口直出"原样复制一遍, 纯属重复 IO)
+    NON_RESULT_PREFIXES = ("solid_model", "mesh_model", "ref_")
     if os.path.exists(mode_a_dir):
         for a_path in glob.glob(os.path.join(mode_a_dir, "*.png")):
             b = os.path.basename(a_path)
+            if b.startswith(NON_RESULT_PREFIXES):
+                continue
             all_keys.add(b[:-4])
 
     processed = 0
@@ -1099,8 +1104,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Mode B Image Merging Processor")
     parser.add_argument(
         "--dir",
-        default=r"c:\Users\5600\Documents\ZDH\MLFXBG\temp\mode_b",
+        default=None,
         help="Mode B directory",
     )
     args = parser.parse_args()
+    if args.dir is None:
+        args.dir = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            "temp",
+            "mode_b",
+        )
     process_all_mode_b_plots(args.dir)
