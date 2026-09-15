@@ -1929,6 +1929,71 @@ def test_cover_prefers_complete_vbs_model_over_offscreen_result(tmp):
     assert chosen == os.path.join(data_dir, "solid_model.png")
 
 
+def test_entity_display_config_defaults_off(tmp):
+    """实体显示开关 (2026-09-15 用户需求): 冷流道/热流道/冷却水三项默认不勾选;
+    配置缺字段/类型错一律按"不显示"处理, 绝不臆造成显示。"""
+    import config_gui
+
+    assert set(config_gui.ENTITY_DISPLAY_KEYS) == {
+        "show_cold_runner",
+        "show_hot_runner",
+        "show_cooling_channels",
+    }, "实体显示键名不对"
+    assert config_gui.get_entity_display({}) == {
+        "show_cold_runner": False,
+        "show_hot_runner": False,
+        "show_cooling_channels": False,
+    }, "缺失配置必须默认全不勾选"
+    assert (
+        config_gui.get_entity_display({"entity_display": None})["show_cooling_channels"]
+        is False
+    ), "类型错必须按不勾选兜底"
+    got = config_gui.get_entity_display({"entity_display": {"show_hot_runner": True}})
+    assert got == {
+        "show_cold_runner": False,
+        "show_hot_runner": True,
+        "show_cooling_channels": False,
+    }, f"部分勾选解析错误: {got}"
+    # GUI 必须把勾选态落盘 (静态断言: collect_config 写 entity_display)
+    src = open(os.path.join(ROOT, "config_gui.py"), encoding="utf-8").read()
+    assert 'self.cfg["entity_display"] = {' in src, "GUI 未落盘实体显示开关"
+    assert "get_entity_display(self.cfg)" in src, "GUI 未按默认值初始化勾选框"
+
+
+def test_vbs_entity_display_switch(tmp):
+    """VBS 侧实体显示开关 (静态断言): 读 entity_display 三项 → 截图前应用 →
+    截图后按快照恢复; 且旧版"图层恢复只置 N/T/TE"的不对称缺陷必须已修。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    for key in (
+        "ConfigObj.entity_display.show_cold_runner",
+        "ConfigObj.entity_display.show_hot_runner",
+        "ConfigObj.entity_display.show_cooling_channels",
+    ):
+        assert key in vbs, f"VBS 未读取 {key}"
+    assert "ShowColdRunner = False" in vbs, "冷流道默认必须为不显示"
+    assert "ShowHotRunner = False" in vbs, "热流道默认必须为不显示"
+    assert "ShowCooling = False" in vbs, "冷却水默认必须为不显示"
+    assert "Sub ApplyEntityVisibility" in vbs, "缺少应用开关的子过程"
+    assert "Sub RestoreEntityVisibility" in vbs, "缺少恢复子过程"
+    assert (
+        "Call ApplyEntityVisibility(ShowColdRunner, ShowHotRunner, ShowCooling)" in vbs
+    ), "截图阶段未应用实体显示开关"
+    assert "Call RestoreEntityVisibility()" in vbs, "截图后未恢复实体显示"
+    # 对称恢复: 必须先快照原值再按原值回写
+    assert (
+        "VisOrig(visIdx) = CBool(LayerManager.GetTypeVisible(L1, VisTypes(visIdx)))"
+        in vbs
+    ), "未快照图层原有可见性"
+    assert "LayerManager.SetTypeVisible L1, VisTypes(visIdx), VisOrig(visIdx)" in vbs, (
+        "未按快照恢复图层可见性"
+    )
+    assert 'For Each I_type In Array("N", "T", "TE")' not in vbs, (
+        "旧版不对称恢复残留 (B/NBC/SBC/LCS 被永久隐藏)"
+    )
+    # 字符串切换仍按官方 EntityType 枚举 (BEAM=B / CURVE=C)
+    assert 'LM.SetTypeVisible LY, "B", want' in vbs, "梁单元切换缺失"
+
+
 def main():
     tests = [
         (name, fn)

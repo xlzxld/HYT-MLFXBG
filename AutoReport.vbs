@@ -119,6 +119,25 @@ On Error GoTo 0
 If ScreenshotMode = "" Then ScreenshotMode = "B"
 Call LogMsg("截图方案模式: " & ScreenshotMode)
 
+' 实体显示开关 (2026-09-15 用户需求): 冷流道/热流道/冷却水默认不显示 ——
+' 分析方案带这三类实体时截图会一起截进去; 勾选后才纳入截图。三者在 Moldflow
+' 里都是梁单元 (BEAM="B") / 曲线 (CURVE="C") —— 见 Autodesk Moldflow API
+' common.EntityType 官方枚举, 故三者同源: 任一勾选 → 该类单元可见。
+Dim ShowColdRunner, ShowHotRunner, ShowCooling
+ShowColdRunner = False
+ShowHotRunner = False
+ShowCooling = False
+On Error Resume Next
+ShowColdRunner = CBool(ConfigObj.entity_display.show_cold_runner)
+ShowHotRunner = CBool(ConfigObj.entity_display.show_hot_runner)
+ShowCooling = CBool(ConfigObj.entity_display.show_cooling_channels)
+If Err.Number <> 0 Then
+    Call LogMsg("WARN: 配置 entity_display 缺字段或类型错, 冷流道/热流道/冷却水按默认(不显示)处理")
+    Err.Clear
+End If
+On Error GoTo 0
+Call LogMsg("实体显示开关: 冷流道=" & CStr(ShowColdRunner) & ", 热流道=" & CStr(ShowHotRunner) & ", 冷却水=" & CStr(ShowCooling) & " (False=截图不显示)")
+
 Call LogMsg("画质参数: Width=" & ImageWidth & ", Height=" & ImageHeight & ", NFrames=" & NFrames)
 
 ' 4K (3840x2160) 已禁用: SaveImage3 离屏导出在 4K 下实机定案大面积断带 (AI_GUIDE.md 坑册)。
@@ -364,6 +383,29 @@ End If
         Else
             TypeToHide = Array("N", "B", "NBC", "SBC", "LCS")
         End If
+        ' 图层可见性快照 (2026-09-15): 本段对 TypeToHide/TypeToShow 两张表都写了值,
+        ' 旧版"恢复"只把 N/T/TE 置 True —— B/NBC/SBC/LCS 被永久留在隐藏态,
+        ' C/S/R/STL/BD 被永久留在显示态, 污染后续全部结果截图
+        ' (冷流道/冷却水梁单元在结果图里静默消失, 即该缺陷的实发后果)。
+        ' 改为先快照原值, 收尾时按原值恢复。
+        Dim VisTypes, VisOrig(), visIdx
+        VisTypes = Array("N", "B", "T", "TE", "NBC", "SBC", "LCS", "C", "S", "R", "STL", "BD")
+        ReDim VisOrig(UBound(VisTypes))
+        For visIdx = 0 To UBound(VisTypes)
+            VisOrig(visIdx) = True
+        Next
+        On Error Resume Next
+        Set L1 = LayerManager.GetFirst()
+        If Not L1 Is Nothing Then
+            For visIdx = 0 To UBound(VisTypes)
+                VisOrig(visIdx) = CBool(LayerManager.GetTypeVisible(L1, VisTypes(visIdx)))
+            Next
+        End If
+        If Err.Number <> 0 Then
+            Call LogMsg("WARN: 读取图层原有可见性失败, 恢复时按默认(可见)处理")
+            Err.Clear
+        End If
+        On Error GoTo 0
         TypeToShow = Array("C", "S", "R", "STL", "BD")
         Set L1 = LayerManager.GetFirst()
         While Not L1 Is Nothing
@@ -393,14 +435,20 @@ End If
             FSO.CopyFile TempDir & "\solid_model.png", ModeBDir & "\solid_model.png", True
             Call LogMsg("纯 CAD 实体模型截图已导出: solid_model.png")
         End If
-        ' 恢复网格显示供 Slide 2 网格质量页使用
+        ' 恢复网格显示供 Slide 2 网格质量页使用 (按快照原值回写, 不再只置 N/T/TE)
+        On Error Resume Next
         Set L1 = LayerManager.GetFirst()
         While Not L1 Is Nothing
-            For Each I_type In Array("N", "T", "TE")
-                LayerManager.SetTypeVisible L1, I_type, True
+            For visIdx = 0 To UBound(VisTypes)
+                LayerManager.SetTypeVisible L1, VisTypes(visIdx), VisOrig(visIdx)
             Next
             Set L1 = LayerManager.GetNext(L1)
         Wend
+        If Err.Number <> 0 Then
+            Call LogMsg("WARN: 图层可见性恢复异常: " & Err.Description)
+            Err.Clear
+        End If
+        On Error GoTo 0
     End If
 
     On Error Resume Next
@@ -582,6 +630,9 @@ If MatDBCode > 0 And MatUseIdx > 0 Then
 Else
     Call LogMsg("WARN: 未找到当前方案材料属性, 跳过粘度/PVT 曲线导出")
 End If
+' 6.0 实体显示: 冷流道/热流道/冷却水 (默认不显示) —— 影响其后全部结果截图
+Call ApplyEntityVisibility(ShowColdRunner, ShowHotRunner, ShowCooling)
+
 ' 6. 循环提取每个结果项的图
 Set PlotsArray = ConfigObj.plots
 ExportCount = 0
@@ -796,6 +847,8 @@ End If
     End If
 Next
 
+' 6.8 恢复实体显示原状 (不改变用户手工设定的图层状态)
+Call RestoreEntityVisibility()
 Call LogMsg("共提取结果图 " & ExportCount & " 张")
 
 ' 6.9 XY 探针峰值数据导出 (GetMaxValue 值 + 曲线 txt; null-on-error, 绝不写 0 充数)
@@ -863,6 +916,82 @@ End If
 ' ==============================================================================
 ' 辅助函数
 ' ==============================================================================
+
+' ==============================================================================
+' 实体显示开关应用/恢复 (2026-09-15 用户需求)
+'
+' 冷流道/热流道/冷却水在 Moldflow 里都是梁单元(B)/曲线(C) —— Autodesk Moldflow
+' API 的 common.EntityType 官方枚举: NODE="N" BEAM="B" TRIANGLE="T" CURVE="C"
+' FACE="F" SURFACE="S" REGION="R" NDBC="NBC" SUBC="SBC" LCS="LCS" TET4="TE" STL="STL"。
+' 三者同源, 故任一勾选即让该类单元可见; 三个都不勾选(默认)则隐藏 ——
+' 截图里就不出现它们。
+' 应用前先快照原有可见性, 恢复时按原值写回, 不改变用户手工设定的图层状态。
+' ==============================================================================
+Dim VisSnapshotB, VisSnapshotC, VisSnapshotOK
+VisSnapshotB = True
+VisSnapshotC = True
+VisSnapshotOK = False
+
+Sub ApplyEntityVisibility(showCold, showHot, showCool)
+    Dim LM, LY, want, firstHit
+    want = CBool(showCold) Or CBool(showHot) Or CBool(showCool)
+    On Error Resume Next
+    Set LM = Synergy.LayerManager()
+    If Err.Number <> 0 Or LM Is Nothing Then
+        Call LogMsg("WARN: LayerManager 不可用, 冷流道/热流道/冷却水显示开关本次未生效")
+        Err.Clear
+        On Error GoTo 0
+        Exit Sub
+    End If
+    firstHit = True
+    Set LY = LM.GetFirst()
+    While Not LY Is Nothing
+        If firstHit Then
+            VisSnapshotB = CBool(LM.GetTypeVisible(LY, "B"))
+            VisSnapshotC = CBool(LM.GetTypeVisible(LY, "C"))
+            VisSnapshotOK = True
+            firstHit = False
+        End If
+        LM.SetTypeVisible LY, "B", want
+        LM.SetTypeVisible LY, "C", want
+        Set LY = LM.GetNext(LY)
+    Wend
+    If Err.Number <> 0 Then
+        Call LogMsg("WARN: 设置实体类型可见性异常: " & Err.Description)
+        VisSnapshotOK = False
+        Err.Clear
+    End If
+    On Error GoTo 0
+    Call LogMsg("实体显示已应用: 梁单元(冷流道/热流道/冷却水)可见=" & CStr(want))
+End Sub
+
+Sub RestoreEntityVisibility()
+    Dim LM, LY, bVal, cVal
+    If VisSnapshotOK Then
+        bVal = VisSnapshotB
+        cVal = VisSnapshotC
+    Else
+        ' 快照失败: 按 Moldflow 默认(可见)恢复, 不留隐藏残留
+        bVal = True
+        cVal = True
+    End If
+    On Error Resume Next
+    Set LM = Synergy.LayerManager()
+    If Err.Number <> 0 Or LM Is Nothing Then
+        Err.Clear
+        On Error GoTo 0
+        Exit Sub
+    End If
+    Set LY = LM.GetFirst()
+    While Not LY Is Nothing
+        LM.SetTypeVisible LY, "B", bVal
+        LM.SetTypeVisible LY, "C", cVal
+        Set LY = LM.GetNext(LY)
+    Wend
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+    Call LogMsg("实体显示已恢复原状 (B=" & CStr(bVal) & ", C=" & CStr(cVal) & ")")
+End Sub
 
 Function FindPlotRobust(PlotMgr, MainName)
     ' 只认精确名 (2026-09-08 用户裁决: 别名/模糊匹配/数据集ID猜测彻底移除 —

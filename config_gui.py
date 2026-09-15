@@ -62,6 +62,24 @@ DEFAULT_PLOT_KEYS = {
 SLIDE_MIN = 4
 SLIDE_MAX = 32
 
+# 实体显示开关 (2026-09-15 用户需求): 分析方案里带冷流道 / 热流道 / 冷却水路时,
+# 它们会一起进入截图; 这三项默认不勾选 = 截图里不显示它们, 勾选后才纳入截图。
+# (config key, 界面文案)
+ENTITY_DISPLAY_ITEMS = [
+    ("show_cold_runner", "冷流道"),
+    ("show_hot_runner", "热流道"),
+    ("show_cooling_channels", "冷却水 (水路)"),
+]
+ENTITY_DISPLAY_KEYS = [k for k, _ in ENTITY_DISPLAY_ITEMS]
+
+
+def get_entity_display(cfg):
+    """读实体显示开关; 缺失/类型错一律按 False (默认不显示), 绝不臆造为显示。"""
+    raw = (cfg or {}).get("entity_display")
+    if not isinstance(raw, dict):
+        raw = {}
+    return {k: bool(raw.get(k, False)) for k in ENTITY_DISPLAY_KEYS}
+
 
 def load_config():
     """读取配置; 损坏/缺失 → ({}, 错误信息), 绝不让 GUI 静默崩溃。
@@ -325,6 +343,26 @@ class ConfigApp:
             ttk.Radiobutton(
                 mode_group, text=label, value=value, variable=self.mode_var
             ).pack(anchor=tk.W, pady=1)
+
+        # 2.5 实体显示 (冷流道/热流道/冷却水; 默认都不勾选 = 截图不显示)
+        ent_group = ttk.LabelFrame(
+            main, text=" 截图实体显示 (默认不显示; 勾选后才进入截图) ", padding="6"
+        )
+        ent_group.pack(fill=tk.X, pady=(0, 6))
+        ent_row = ttk.Frame(ent_group)
+        ent_row.pack(fill=tk.X)
+        ent_now = get_entity_display(self.cfg)
+        self.entity_vars = {}
+        for ekey, elabel in ENTITY_DISPLAY_ITEMS:
+            self.entity_vars[ekey] = tk.BooleanVar(value=ent_now[ekey])
+            ttk.Checkbutton(ent_row, text=elabel, variable=self.entity_vars[ekey]).pack(
+                side=tk.LEFT, padx=(0, 14)
+            )
+        ttk.Label(
+            ent_group,
+            text="冷流道/热流道/冷却水在 Moldflow 里都是梁(曲线)单元, 三者同源: 勾选任一项即显示该类单元。",
+            foreground="#888888",
+        ).pack(anchor=tk.W, pady=(2, 0))
 
         # 3. 结果项勾选区 (占主要空间)
         list_group = ttk.LabelFrame(
@@ -736,6 +774,9 @@ class ConfigApp:
         self.cfg["open_after_export"] = self.open_var.get()
         self.cfg["show_gui_before_run"] = self.show_gui_var.get()
         self.cfg["screenshot_mode"] = self.mode_var.get()
+        self.cfg["entity_display"] = {
+            ekey: bool(self.entity_vars[ekey].get()) for ekey in ENTITY_DISPLAY_KEYS
+        }
         self.cfg["on_missing_data"] = self.on_missing_var.get()
 
         if "image_settings" not in self.cfg:

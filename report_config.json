@@ -4,6 +4,11 @@
   "open_after_export": true,
   "show_gui_before_run": true,
   "screenshot_mode": "BOTH",
+  "entity_display": {
+    "show_cold_runner": false,
+    "show_hot_runner": false,
+    "show_cooling_channels": false
+  },
   "image_settings": {
     "width": 2560,
     "height": 1440,
