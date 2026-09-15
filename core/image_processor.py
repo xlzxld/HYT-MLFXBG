@@ -2,18 +2,21 @@
 image_processor.py - 方案 B 专属图像智能拼合与全要素增强模块
 功能：
 1. 3D 结果云图：
-   - 提取完整左侧数据条（包含顶部结果标题与时间戳、单位、纵向色条与清晰数值，严格对齐用户图 2）；
-   - 提取三维定向坐标系（XYZ 轴及三行旋转角度数值，做透明背景处理，严格对齐用户图 3）；
+   - 提取完整左侧数据条（包含顶部结果标题与时间戳、单位、纵向色条与清晰数值，
+     按图例自身几何定位, 标题块与刻度数值一律不截断）；
+   - 提取三维定向坐标系（XYZ 轴及三行旋转角度数值，做透明背景处理）；
    - 提取/渲染右上角工程方案名称标签；
-   - 紧致裁剪 3D 模型实体四周留白，超大倍率放大，最大化利用画面有效区域；
-   - 按照 1.58:1 黄金比例（契合 PPT 版面安全框）合成全要素高保真云图（严格对齐用户图 1）。
+   - 模型主体一律取自**方案 A 视口截图** (用户所见即所得, 几何完整、样式一致);
+     离屏 SaveImage3 的 model_*.png 实机定案丢面/碎片/换样式, 仅作不可用时的兜底;
+   - 按照 1.58:1 黄金比例（契合 PPT 版面安全框）合成全要素高保真云图。
 2. 2D 曲线图（XY 图）：
    - Moldflow 原生 XY 截图紧致裁切输出，锁模力/注射位置处压力曲线在最高峰值处
      绘制黄色探针标记框 (annotate_xy_curves, 方案 A/B 通用; 峰值数据由调用方
      从 peak_values.json/曲线 txt 单源传入, 缺失则跳过标注, 绝不使用硬编码值)。
 3. 纯模型本体图 (封面)：
-   - solid_model.png 优先采用 VBS 图层自适应后的 SaveImage3 真实导出;
-     导出空白/缺失时回退 generate_solid_cad_model 灰色重绘 (FUSION 旧导出曾全白)。
+   - 优先 VBS 图层自适应后的 SaveImage3 真实导出 solid_model.png (纯模型本体);
+     离屏导出异常时依次回退视口模型裁剪 → 离屏结果渲染候选 (均启用割裂判据),
+     全部落空返回 None, 由调用方登记缺失 (绝不臆造; 灰色重绘已停用)。
 """
 
 import os
@@ -98,59 +101,111 @@ def make_transparent_white(img, threshold=245):
     return Image.fromarray(arr)
 
 
-def _left_bar_cutoff(band):
-    """在左侧数据条裁剪带内计算"切断列" x (band 内坐标), 返回 int 或 None。
+def _find_colour_bar(arr):
+    """定位 Moldflow 左侧配色色条 (左区最高的高饱和竖列带)。
 
-    背景 (2026-09-08 实机测量, 2112x1136 视口): 固定 340px 裁剪带会混入模型
-    左缘碎片 (band x[200-330) 饱和占比 0.15-0.38), 拼合后贴在画布左端形成
-    与主体分离的月牙碎片 — 即方案 B "图片割裂"的直接来源。
-    实测列分布: 色条 x[55-100) 高饱和; 数值标签 x[100-140) 深色低占比;
-    白隙 x[145-200); 模型碎片 x[200+)。
-
-    算法 (与分辨率无关, 全部按列统计):
-    1) 逐列高饱和像素占比 (max-min>60), 占比>0.12 的连续列带 (允许 <=6px 破洞)
-       中取包含最左命中列的那条 = 色条, 记 bar_left/bar_right;
-    2) 主判据: 自 bar_right 起向右找第一条宽度 >=6px 的近全白列隙
-       (列非白占比<0.02), 隙的左缘即切断点 (保住标签, 切掉碎片);
-    3) 备用: 找不到白隙 → bar_right + max(1.6*色条宽, 30px) 处切断;
-    4) 都不可用 → None (调用方保持原行为, 不静默改变输出)。
+    返回 (bar_left, bar_right, bar_top, bar_bottom) 或 None。
+    实机取证 (2026-09-15, 2112x1136 视口 pressure.png): 色条列 x 80..120 的高饱和
+    像素占比 0.55, 其余列 (数值文字/白隙/模型) 占比 0.00 — 0.4 的判据有百倍余量。
     """
-    arr = np.asarray(band.convert("RGB")).astype(np.int16)
-    sat_cols = ((arr.max(axis=2) - arr.min(axis=2)) > 60).mean(axis=0)
-    nonwhite_cols = (arr.max(axis=2) < 245).mean(axis=0)
-    colored = sat_cols > 0.12
+    h, w = arr.shape[:2]
+    zone = arr[:, : max(1, int(w * 0.5))]
+    sat = (zone.max(axis=2) - zone.min(axis=2)) > 60
+    colored = sat.mean(axis=0) > 0.4
     if not colored.any():
         return None
-    first = int(np.argmax(colored))
-    # 含最左命中列的连续带 (允许 <=6px 破洞, 兼容色条内部分段)
-    bar_left, bar_right, gap = first, first, 0
-    for x in range(first, len(colored)):
+    left = int(np.argmax(colored))
+    # 含最左命中列的连续带 (允许 <=2px 破洞, 兼容色条内部分段)
+    right, gap = left, 0
+    for x in range(left, len(colored)):
         if colored[x]:
-            bar_right = x
+            right = x
             gap = 0
         else:
             gap += 1
-            if gap > 6:
+            if gap > 2:
                 break
-    bar_w = bar_right - bar_left + 1
-    # 主判据: 色条右侧第一条近全白列隙 (>=6px) → 隙左缘切断
-    gap_w = max(6, arr.shape[1] // 50)
+    rows = np.where(sat[:, left : right + 1].any(axis=1))[0]
+    if len(rows) == 0:
+        return None
+    return left, right, int(rows.min()), int(rows.max())
+
+
+def _legend_right_edge(luma, bar_right):
+    """图例块右缘 = 色条右侧第一条「整列全白」竖缝的左缘; 找不到返回 None。
+
+    背景 (2026-09-15 实机取证, 2112x1136 视口): 旧实现把「色条右侧第一条白隙」
+    当切断点, 实测该白隙落在**色条与数值标签之间** (band x≈130), 把标题块
+    (右缘随结果名长度在 137..206 间变化) 与数值右半部一起切掉 —— 即用户反馈的
+    「数据条上方的文字被截断」(pressure/volumetric_shrinkage/flow_front_temp/
+    weld_lines/warpage_all/vp_switch_pressure 六张全部命中, cut 130~153 < 标题右缘)。
+    新判据要求白缝宽 >= 8px **且缝右侧必须还有内容 (模型)**, 从而跳过色条与数值
+    之间的小白隙, 停在图例与模型之间那条真正的分隔缝上 (实测 pressure 缝 158..289,
+    vp_switch_pressure 缝 207..289, 两者右缘都恰好 = 对应标题块右缘 + 1)。
+
+    扫描前屏蔽底部水印带 (y > 0.88h): 水印的非白像素会把每一列都算成「有内容」,
+    任何白缝都检不出来 — 旧实现即因此退化为粗暴兜底 (bar_right + 45), 这正是
+    截断的直接触发路径。
+    """
+    h, w = luma.shape
+    band = luma[: max(1, int(h * 0.88))]
+    nonwhite = (band < 245).mean(axis=0)
+    min_gap = max(8, w // 150)
     run = 0
-    for x in range(bar_right + 2, arr.shape[1]):
-        if nonwhite_cols[x] < 0.02:
+    for x in range(bar_right + 2, w):
+        if nonwhite[x] < 0.005:
             run += 1
-            if run >= gap_w:
-                return x - run + 1
+            continue
+        if run >= min_gap and nonwhite[x : x + 5].max() > 0.02:
+            return x - run
+        run = 0
+    return None
+
+
+def legend_box(im):
+    """左侧**完整**数据条包围盒 (x0,y0,x1,y1); 定位失败返回 None。
+
+    纵向由色条界定: 上界取图例列内最上方的内容行 (结果名/时间/单位块), 下界取
+    色条底部 + 8% 色条高 (包住末位刻度数值)。底部水印 (AUTODESK MOLDFLOW
+    INSIGHT, 实测 y 1040..1120) 天然落在下界 (≈910) 之外 —— 旧实现把它裁进数据条,
+    既让数据条白占 250px 高、又把刻度数值等比缩小。
+    """
+    luma = np.asarray(im.convert("L"))
+    h, w = luma.shape
+    arr = np.asarray(im.convert("RGB")).astype(np.int16)
+    bar = _find_colour_bar(arr)
+    if bar is None:
+        # 无色条 (灰度色标/无图例): 退回保守区域, 只取左上角图例列
+        cut = max(60, int(w * 0.16))
+        y_bot = int(h * 0.86)
+    else:
+        bar_left, bar_right, bar_top, bar_bottom = bar
+        edge = _legend_right_edge(luma, bar_right)
+        if edge is None:
+            bar_w = bar_right - bar_left + 1
+            cut = min(w, bar_right + max(int(bar_w * 2.0), 60))
         else:
-            run = 0
-    # 备用: 色条宽的 1.6 倍作为标签余量
-    return min(arr.shape[1], bar_right + max(int(bar_w * 1.6), 30))
+            # 缝内全是白列: 向缝内多取几像素只会多出白边, 绝不会截断文字
+            cut = min(w, edge + min(8, max(2, w // 300)))
+        y_bot = min(h, bar_bottom + max(10, int((bar_bottom - bar_top) * 0.08)))
+    region = luma[:y_bot, :cut]
+    mask = region < 240
+    if not mask.any():
+        return None
+    ys, xs = np.where(mask)
+    x0 = max(0, int(xs.min()) - 2)
+    y0 = max(0, int(ys.min()) - 2)
+    x1 = min(cut, int(xs.max()) + 5)
+    y1 = min(y_bot, int(ys.max()) + 5)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    return x0, y0, x1, y1
 
 
 def extract_viewport_components(viewport_path):
     """
     从 Moldflow 视口抓取图 (如 mode_a/pressure.png) 中提取全要素：
-    1. left_bar: 左侧完整数据条（含结果名、时间、单位、色条及数值，图2）
+    1. left_bar: 左侧**完整**数据条（结果名+时间戳+单位+色条+全部刻度数值，图2）
     2. triad: 右下角三维坐标系与旋转角度（图3）
     3. title: 顶部工程方案名
     """
@@ -167,42 +222,21 @@ def extract_viewport_components(viewport_path):
     if w < 400 or h < 300:
         return None, None, None
 
-    # 1. 提取左侧数据条 (图2) — 含标题块(结果名+时间)、单位、色条与数值
+    # 1. 提取左侧数据条 (图2) — 含标题块(结果名+时间)、单位、色条与全部数值。
     # 实机包围盒 (2026-09-08, 2112x1136 视口): 标题 y29-59, 单位 y191,
-    # 色条 y228-870, 数值 y1093-1120, 左起 x15 — 裁剪框必须完整包住,
-    # 旧框 (50,20,350,…) 曾把标题左缘与顶部切掉 (用户反馈"截图不全")。
-    # T8pre 结论仍成立: 保持固定框 (Moldflow 图例铬层为固定逻辑像素)。
-    left_crop = im.crop((10, 8, min(w, 340), min(h, 1160)))
-    # 割裂修复 (2026-09-08): 340px 带会混入模型左缘碎片, 拼合后被贴到画布
-    # 左端形成与主体分离的月牙 — 在带内按色条定位 + 白隙切断 (分辨率无关)。
-    band_w = left_crop.width
-    cut_x = _left_bar_cutoff(left_crop)
-    cut_applied = cut_x is not None and cut_x < band_w
-    if cut_applied:
-        print(
-            f"[image_processor] 左侧数据条在 band x={cut_x} 切断模型碎片 (带宽 {band_w})"
-        )
-        left_crop = left_crop.crop((0, 0, cut_x, left_crop.height))
-    gray_l = left_crop.convert("L")
-    bbox_l = gray_l.point(lambda p: 255 if p < 240 else 0).getbbox()
+    # 色条 y228-870, 数值 y1093-1120, 左起 x15 — 裁剪框必须完整包住。
+    # (2026-09-15 改写: 由固定 340px 带 + 白隙切断 改为 legend_box 自几何定位,
+    #  原实现把标题块与数值右半部一并切掉, 详见 _legend_right_edge 注释。)
     left_bar = None
-    if bbox_l:
-        x1 = max(0, bbox_l[0] - 2)
-        y1 = max(0, bbox_l[1] - 2)
-        x2 = min(left_crop.width, bbox_l[2] + 4)
-        y2 = min(left_crop.height, bbox_l[3] + 4)
-        fill = (
-            (bbox_l[2] - bbox_l[0])
-            * (bbox_l[3] - bbox_l[1])
-            / (left_crop.width * left_crop.height)
-        )
-        # fill>0.8 在切断成功后属正常 (数据条本身致密); 仅切断失败时才可能卷入模型
-        if fill > 0.8 and not cut_applied:
+    box = legend_box(im)
+    if box:
+        bar_crop = im.crop(box)
+        if bar_crop.width > w * 0.35:
             print(
-                f"[image_processor] WARN: 左侧色带提取填充率 {fill:.0%} 异常偏高, "
-                f"可能卷入模型/水印 (视口 {w}x{h} 偏离设计尺寸 1920x1080?)"
+                f"[image_processor] WARN: 数据条宽 {bar_crop.width} 超过画面 35%, "
+                f"疑把模型左缘卷进图例 (视口 {w}x{h} 偏离设计尺寸?)"
             )
-        left_bar = left_crop.crop((x1, y1, x2, y2))
+        left_bar = bar_crop
 
     # 2. 提取三维坐标系 (图3)
     # 视口右下角区域 x: w-260..w, y: h-260..h
@@ -238,8 +272,231 @@ def extract_viewport_components(viewport_path):
     return left_bar, triad, title_img
 
 
-def _model_image_usable(path):
+def _components_bbox(mask, stride):
+    """非白掩码的 4 连通域列表 [(面积, x0, y0, x1, y1)] (stride 降采样后回标坐标)。
+
+    降采样跑连通域: 2K 视口原图 240 万像素, 纯 Python 扫描过慢; stride 归一到
+    200px 量级后仅约 4 万格, 且降采样会顺带抹平模型内部 1-2px 的浅色接缝
+    (让同一实体更易判为单连通域), 对"找出模型主体 + 剔除视口铬层"足够。
+    """
+    small = mask[::stride, ::stride]
+    sh, sw = small.shape
+    seen = np.zeros_like(small, dtype=bool)
+    out = []
+    for sy in range(sh):
+        if not small[sy].any():
+            continue
+        for sx in range(sw):
+            if not small[sy, sx] or seen[sy, sx]:
+                continue
+            stack = [(sy, sx)]
+            seen[sy, sx] = True
+            n = 0
+            y0 = y1 = sy
+            x0 = x1 = sx
+            while stack:
+                cy, cx = stack.pop()
+                n += 1
+                if cy < y0:
+                    y0 = cy
+                elif cy > y1:
+                    y1 = cy
+                if cx < x0:
+                    x0 = cx
+                elif cx > x1:
+                    x1 = cx
+                for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                    ny, nx = cy + dy, cx + dx
+                    if (
+                        0 <= ny < sh
+                        and 0 <= nx < sw
+                        and small[ny, nx]
+                        and not seen[ny, nx]
+                    ):
+                        seen[ny, nx] = True
+                        stack.append((ny, nx))
+            out.append((n, x0, y0, x1, y1))
+    return out
+
+
+def _max_true_run(row):
+    """一维布尔数组里最长连续 True 段的长度 (0 = 全 False)。"""
+    if not row.any():
+        return 0
+    edges = np.flatnonzero(np.diff(np.concatenate(([0], row.view(np.int8), [0]))))
+    return int((edges[1::2] - edges[::2]).max())
+
+
+def erase_scale_bar(rgb, luma, y_from=0.85):
+    """原地抹白视口底部 Moldflow 缩放比例尺铬层; 返回抹除的横线行数。
+
+    实机取证 (2026-09-15, 2112x1136 视口): 比例尺横线占 y 1084-1085 两行, 单行最长
+    连续非白段 957px (占区域宽 0.49), 上下各 3 行覆盖不到它的 55%; 它在多处被模型
+    实体压住, 于是纯像素级连通域里与模型主体连成一体, 靠"剔除小块"去不掉 ——
+    结果就是拼合图底边露出一段被切断的标尺 + 半截"缩放 (300 mm)"文字 (边界不清晰)。
+
+    两步抹除 (只动无彩色像素, 模型实体的饱和色像素与灰底厚实体都原样保留):
+    1) 比例尺主线: 按"细横线"识别 (整行有长连续段 + 上下行稀疏), 且该行像素纵向
+       厚度 <= 4px 才算铬层 —— 模型实体在 ±4 行窗口内厚度必然 >=5px, 故被盖住的
+       那几段比例尺不会被误当成模型, 模型轮廓也不受任何影响;
+    2) 底部小尺寸无彩色块: 比例尺刻度线 / "缩放 (300 mm)" 说明文字 / 水印残尾。
+    抹除后这些结构不再是连通域, 模型包围盒自然停在实体边界上。
+    """
+    h, w = luma.shape
+    strict = luma < 245
+    # 抹除用宽松阈值: 铬层线条带 1-2px 抗锯齿浅灰光晕 (实测 L≈246-252), 仍按严格
+    # 阈值判结构会留下一条"淡灰细线"残影 —— 实测首版正是如此 (比例尺主线抹掉后
+    # 底边仍可见 1px 淡线 + 断续文字残点)。
+    loose = luma < 253
+    sat = rgb.max(axis=2) - rgb.min(axis=2)
+    achromatic = sat < 60
+    y0 = max(0, int(h * y_from))
+    removed_rows = 0
+
+    for y in range(y0, h):
+        cover = float(strict[y].mean())
+        if cover < 0.06 or _max_true_run(strict[y]) < max(300, int(0.30 * w)):
+            continue
+        up = float(strict[max(0, y - 3) : y].mean())
+        dn = float(strict[y + 1 : y + 4].mean())
+        if up >= 0.55 * cover or dn >= 0.55 * cover:
+            continue
+        # 纵向厚度用宽松阈值量: 模型实体 (含抗锯齿边) 在 ±4 行窗口内必然 >=7px
+        thin = loose[max(0, y - 4) : min(h, y + 5)].sum(axis=0) <= 6
+        hit = False
+        for yy in range(max(0, y - 1), min(h, y + 2)):
+            sel = loose[yy] & achromatic[yy] & thin
+            if sel.any():
+                rgb[yy][sel] = 255
+                strict[yy][sel] = False
+                loose[yy][sel] = False
+                hit = True
+        if hit:
+            removed_rows += 1
+
+    strip = strict[y0:] & achromatic[y0:]
+    if strip.any():
+        stride = 2
+        small_thr = max(64, int(0.005 * strip.size))
+        for area, cx0, cy0, cx1, cy1 in _components_bbox(strip, stride):
+            if (
+                area * stride * stride >= small_thr
+                or (cy1 - cy0 + 1) * stride >= 0.06 * h
+            ):
+                continue
+            ay0 = max(y0, y0 + cy0 * stride - stride)
+            ay1 = min(h, y0 + (cy1 + 1) * stride + stride)
+            ax0 = max(0, cx0 * stride - stride)
+            ax1 = min(w, (cx1 + 1) * stride + stride)
+            block = loose[ay0:ay1, ax0:ax1] & achromatic[ay0:ay1, ax0:ax1]
+            if block.any():
+                rgb[ay0:ay1, ax0:ax1][block] = 255
+                strict[ay0:ay1, ax0:ax1][block] = False
+                loose[ay0:ay1, ax0:ax1][block] = False
+    return removed_rows
+
+
+def extract_viewport_model(viewport_path, exclude_x=None):
+    """从方案 A 视口截图裁出**完整**的模型主体图; 取景不可信时返回 None。
+
+    背景 (2026-09-15 实机取证, 配 2560x1440): SaveImage3 离屏导出的 model_*.png
+    在本机丢面/留悬浮碎片 —— 同一方案 7 张里 pressure / volumetric_shrinkage /
+    flow_front_temp / vp_switch_pressure 四张缺掉模型左下半张面 (连通域 = 主体
+    97.7% + 悬浮碎片 2.2%), weld_lines 被渲染成半透明线框样式, 与视口所见
+    (solid 实色) 不一致。这正是用户反复反馈、且此前多次修改仍未解决的
+    "模型割裂/不完整"的直接来源 —— 离屏渲染路径不可信, 故方案 B 的模型一律
+    取自视口截图 (用户所见即所得, 几何完整、样式一致)。
+
+    实现: 在 exclude_x (图例右缘) 右侧做非白连通域分析, 保留主连通域与显著
+    伴随连通域 (流道/水路等独立实体), 剔除视口铬层 (右侧工具栏图标、右下
+    坐标系、底部比例尺等小块), 取并集包围盒裁剪。底部的缩放比例尺与模型实体
+    在像素上粘连 (无法按连通域剔除), 先按"细横线"特征抹白 (见 erase_scale_bar)。
+    可信度闸: 模型须占画面 >=25% 宽高且 >=3% 面积, 否则判为"取景不可信"
+    返回 None, 由调用方回退离屏模型 (合成测试图/异常取景不会误裁出小块)。
+    """
+    if not viewport_path or not os.path.exists(viewport_path):
+        return None
+    try:
+        im = Image.open(viewport_path).convert("RGB")
+    except Exception as e:
+        print(f"[image_processor] 视口模型读取失败 ({viewport_path}): {e}")
+        return None
+    w, h = im.size
+    if exclude_x is None:
+        box = legend_box(im)
+        # 图例右缘 + 2px: 再窄也可能把图例右端文字切进模型裁剪区
+        exclude_x = (box[2] + 2) if box else 0
+    x_off = max(0, int(exclude_x))
+    region = im.crop((x_off, 0, w, h))
+    rw, rh = region.size
+    if rw < 80 or rh < 80:
+        return None
+
+    arr = np.asarray(region).copy()
+    luma = np.asarray(region.convert("L"))
+    stripped = erase_scale_bar(arr, luma)
+    if stripped:
+        region = Image.fromarray(arr)
+        luma = np.asarray(region.convert("L"))
+        print(
+            f"[image_processor] 已抹除视口底部比例尺铬层 {stripped} 行 (模型实色像素保留)"
+        )
+    mask = luma < 245
+    stride = max(4, min(rw, rh) // 200)
+    comps = _components_bbox(mask, stride)
+    if not comps:
+        return None
+    comps.sort(key=lambda c: c[0], reverse=True)
+    largest = comps[0][0]
+    keep = []
+    for area, cx0, cy0, cx1, cy1 in comps:
+        if area < max(max(1, 3000 // (stride * stride)), int(largest * 0.003)):
+            continue
+        ax0 = cx0 * stride
+        ay0 = cy0 * stride
+        ax1 = min(rw, cx1 * stride + stride)
+        ay1 = min(rh, cy1 * stride + stride)
+        # 视口铬层: 右侧工具栏竖带 / 底部比例尺带。只判小块 (>=25% 主体的大块
+        # 一律视为模型本体, 避免把贴合右侧的宽模型误删)。
+        if ax0 >= 0.90 * rw and area < 0.25 * largest:
+            continue
+        if ay0 >= 0.92 * rh and area < 0.25 * largest:
+            continue
+        keep.append((ax0, ay0, ax1, ay1))
+    if not keep:
+        return None
+
+    bx0 = min(k[0] for k in keep)
+    by0 = min(k[1] for k in keep)
+    bx1 = max(k[2] for k in keep)
+    by1 = max(k[3] for k in keep)
+    mw, mh = bx1 - bx0, by1 - by0
+    if (
+        mw < 0.25 * rw
+        or mh < 0.25 * rh
+        or mw * mh < 0.03 * rw * rh
+        or mw < 2 * stride
+        or mh < 2 * stride
+    ):
+        print(
+            f"[image_processor] 视口模型取景不可信 ({mw}x{mh} 于 {rw}x{rh}), "
+            "不裁用 (调用方回退离屏模型)"
+        )
+        return None
+    if bx0 <= stride or by0 <= stride or bx1 >= rw - stride or by1 >= rh - stride:
+        print(
+            "[image_processor] WARN: 视口模型触及画面边缘, 可能被窗口裁切 — "
+            "建议在 Moldflow 里缩小视图 (全部入框) 后重跑"
+        )
+    return region.crop((bx0, by0, bx1, by1))
+
+
+def _model_image_usable(path, reject_fragments=False):
     """模型图完整性判据: 非空白且非断带 (与 merge 三重护栏同判据)。
+    reject_fragments=True 时额外否决"主体 + 悬浮碎片"式割裂图
+    (SaveImage3 离屏渲染的实发特征: 主体 97.7% + 碎片 2.2%, 且碎片与主体
+    同为模型面片却颜色/位置错乱) —— 仅用于已知不可靠的离屏候选;
+    VBS 纯模型直出与视口裁剪允许天然多实体 (流道/水路独立体)。
     返回 (ok, 原因)。"""
     try:
         with Image.open(path) as im:
@@ -254,50 +511,98 @@ def _model_image_usable(path):
         aspect = cw / float(ch)
         if h_ratio < 0.35 and aspect > 2.2:
             return False, f"断带特征 (高度占比 {h_ratio:.0%}, 宽高比 {aspect:.2f})"
+        if reject_fragments:
+            comps = _components_bbox(arr < 240, max(4, min(w, h) // 200))
+            if comps:
+                comps.sort(key=lambda c: c[0], reverse=True)
+                largest = comps[0][0]
+                extra = sum(
+                    a for a, *_ in comps[1:] if a >= max(1, int(largest * 0.01))
+                )
+                if extra > 0:
+                    return False, (
+                        f"割裂特征 (主体 {largest} px + 悬浮碎片 {extra} px, "
+                        f"{len(comps)} 个连通域)"
+                    )
         return True, ""
     except Exception as e:
         return False, str(e)
 
 
 def resolve_cover_image(data_dir):
-    """封面模型本体图解析 (2026-09-08 用户二次裁决)。
+    """封面模型本体图解析。
 
-    背景: 视口截图样式随 Moldflow 图层手工勾选漂移 (CAD 几何层可见时呈灰色
-    光滑样式, 被用户否决; 层对象亦无 Name 属性, CAD 层方案 API 不可行)。
-    改为直出离屏导出的模型本体图 (红色网格着色, 与分析模型完全一致):
-    候选顺序 mode_b/model_pressure.png → mode_b/model_volumetric_shrinkage.png
-    → data_dir/solid_model.png (VBS 视口导出, 最后兜底)。
-    候选经 _model_image_usable 完整性判据, 命中后裁白边写回
-    data_dir/solid_model.png 并返回其路径; 全部落空返回 None (调用方登记缺失)。
+    候选顺序 (2026-09-15 修订):
+    1. data_dir/solid_model.png — VBS 用 SaveImage3 离屏直出的**纯模型本体图**
+       (红色网格着色, 与分析模型一致)。实机取证: 该导出图连通域 = 1 个且占满
+       画面 (完整), 是设计上的正解。
+    2. mode_a/ 与 mode_b/ 下的同名副本 (VBS 导出后拷贝, 内容一致)。
+    3. mode_a/<结果图> 的视口模型裁剪 — 完整但为结果着色 (封面次选)。
+    4. mode_b/model_pressure.png / model_volumetric_shrinkage.png — 离屏结果渲染,
+       实机定案不可靠 (丢面 + 悬浮碎片), 仅最后兜底并启用割裂判据。
+
+    原实现把 4 提到第 1 位, 于是封面被残缺的离屏图覆写 — 用户反馈的
+    "第一页模型本体图割裂" 直接来源。
+    命中后裁白边写回 data_dir/solid_model.png 并返回其路径; 全部落空返回 None。
     """
+    mode_a_dir = os.path.join(data_dir, "mode_a")
     mode_b_dir = os.path.join(data_dir, "mode_b")
     fallback = os.path.join(data_dir, "solid_model.png")
-    candidates = [
-        os.path.join(mode_b_dir, "model_pressure.png"),
-        os.path.join(mode_b_dir, "model_volumetric_shrinkage.png"),
-    ]
-    for cand in candidates:
-        if not os.path.exists(cand):
-            continue
-        ok, reason = _model_image_usable(cand)
+
+    def _accept(cand, reject_fragments, tag):
+        ok, reason = _model_image_usable(cand, reject_fragments=reject_fragments)
         if not ok:
             print(
                 f"[image_processor] 封面候选 {os.path.basename(cand)} 不可用: {reason}"
             )
-            continue
+            return None
+        out = os.path.join(data_dir, "solid_model.png")
+        if os.path.abspath(cand) == os.path.abspath(out):
+            print(f"[image_processor] 封面模型本体直出: {tag}")
+            return out
         trimmed = trim_white_borders(Image.open(cand), border=8)
         os.makedirs(data_dir, exist_ok=True)
-        trimmed.convert("RGB").save(fallback, "PNG")
+        trimmed.convert("RGB").save(out, "PNG")
+        print(f"[image_processor] 封面模型本体直出: {tag} -> solid_model.png")
+        return out
+
+    for cand, tag in [
+        (fallback, "VBS 离屏纯模型导出 solid_model.png"),
+        (os.path.join(mode_a_dir, "solid_model.png"), "mode_a/solid_model.png"),
+        (os.path.join(mode_b_dir, "solid_model.png"), "mode_b/solid_model.png"),
+    ]:
+        if os.path.exists(cand):
+            # 同样启用割裂判据: 这三个文件在正常一次运行里内容一致 (VBS 导出一份
+            # 再拷贝), 但 data_dir/solid_model.png 可能被历史版本用残缺离屏图覆写过
+            # —— 拒掉它才能让候选链继续走到 mode_a 的完整导出。
+            got = _accept(cand, True, tag)
+            if got:
+                return got
+
+    # 次选: 视口模型裁剪 (完整, 但为结果着色)
+    for key in ("pressure", "volumetric_shrinkage", "flow_front_temp"):
+        vp = os.path.join(mode_a_dir, f"{key}.png")
+        if not os.path.exists(vp):
+            continue
+        vp_model = extract_viewport_model(vp)
+        if vp_model is None:
+            continue
+        os.makedirs(data_dir, exist_ok=True)
+        vp_model.convert("RGB").save(fallback, "PNG")
         print(
-            f"[image_processor] 封面模型本体直出: {os.path.basename(cand)} -> solid_model.png"
+            f"[image_processor] 封面回退视口模型裁剪: mode_a/{key}.png -> solid_model.png"
         )
         return fallback
-    if os.path.exists(fallback):
-        ok, reason = _model_image_usable(fallback)
-        if ok:
-            print("[image_processor] 封面回退 VBS 视口导出 solid_model.png")
-            return fallback
-        print(f"[image_processor] 封面回退候选 solid_model.png 不可用: {reason}")
+
+    # 最后兜底: 离屏结果渲染候选 (启用割裂判据)
+    for cand in [
+        os.path.join(mode_b_dir, "model_pressure.png"),
+        os.path.join(mode_b_dir, "model_volumetric_shrinkage.png"),
+    ]:
+        if os.path.exists(cand):
+            got = _accept(cand, True, os.path.basename(cand))
+            if got:
+                return got
     return None
 
 
@@ -804,72 +1109,96 @@ def merge_scale_and_model(
         except Exception as e:
             print(f"[image_processor] 色带回退读取失败 ({scale_path}): {e}")
 
-    # 检查模型文件
-    if not os.path.exists(model_path):
-        if viewport_path and os.path.exists(viewport_path):
-            # 若没有独立模型图，则直接将视口图作为输出
-            try:
-                Image.open(viewport_path).save(output_path)
-                return True
-            except Exception as e:
-                print(
-                    f"[image_processor] 视口图直出失败 ({viewport_path} -> {output_path}): {e}"
-                )
-                return False
-        return False
+    # 2.2 模型来源 (2026-09-15 修订: 视口优先)
+    # 视口截图裁出的模型主体恒完整、样式与用户在 Moldflow 所见一致。
+    # 离屏 SaveImage3 的 model_*.png 实机定案丢面/悬浮碎片/换渲染样式
+    # (见 extract_viewport_model 注释), 仅在视口模型不可用时兜底。
+    im_model_raw = None
+    if viewport_path and os.path.exists(viewport_path):
+        vp_model = extract_viewport_model(viewport_path)
+        if vp_model is not None:
+            im_model_raw = vp_model.convert("RGBA")
+            print(
+                f"[image_processor] 模型取自视口完整画面 ({vp_model.width}x{vp_model.height}): "
+                f"{os.path.basename(viewport_path)}"
+            )
 
-    try:
-        im_model_raw = Image.open(model_path).convert("RGBA")
-    except Exception as e:
-        print(f"[image_processor] Error reading model {model_path}: {e}")
-        return False
+    if im_model_raw is None:
+        if not os.path.exists(model_path):
+            if viewport_path and os.path.exists(viewport_path):
+                # 无独立模型图且视口模型不可用 → 直接将视口图作为输出
+                try:
+                    Image.open(viewport_path).save(output_path)
+                    return True
+                except Exception as e:
+                    print(
+                        f"[image_processor] 视口图直出失败 ({viewport_path} -> {output_path}): {e}"
+                    )
+                    return False
+            return False
+
+        try:
+            im_model_raw = Image.open(model_path).convert("RGBA")
+        except Exception as e:
+            print(f"[image_processor] Error reading model {model_path}: {e}")
+            return False
+
+        # 仅离屏兜底路径需要信任校验 (视口裁剪已由 extract_viewport_model 把关)。
+        # SaveImage3 离屏导出可靠性差 (实机取证 2026-09-08: 配 2560x1440 却输出
+        # 3840x2160 且模型只渲染出局部; 2026-09-15: 2K 下丢半张面 + 悬浮碎片)。
+        # 校验 1 (主): 实际输出分辨率 != 配置分辨率 → 导出布局已错乱, 弃用;
+        # 校验 2: 内容占画布面积比过低 = 渲染残缺;
+        # 校验 3: 割裂特征 (主体 + 悬浮碎片)。
+        # 命中即回退整张视口图 (完整正确, 与方案 A 同级保底, 绝不输出残缺图)。
+        size_mismatch = bool(
+            expected_model_size
+            and tuple(im_model_raw.size) != tuple(expected_model_size)
+            and all(v > 0 for v in expected_model_size)
+        )
+        im_model_trimmed_chk = trim_white_borders(im_model_raw, border=8)
+        area_ratio = (im_model_trimmed_chk.width * im_model_trimmed_chk.height) / float(
+            im_model_raw.width * im_model_raw.height
+        )
+        h_ratio = im_model_trimmed_chk.height / float(im_model_raw.height)
+        aspect = im_model_trimmed_chk.width / float(im_model_trimmed_chk.height)
+        # 渲染断带特征 (实发 2026-09-08 4K 配置: 模型只剩一条横带, 高度占比 30%,
+        # 宽高比 2.66): Fit 后的正常模型高度占比远高于此, 命中即视为残缺。
+        # 权衡: 天然超宽扁零件 Fit 后也可能低占比, 误杀时回退的视口图仍完整可用。
+        band_broken = h_ratio < 0.35 and aspect > 2.2
+        frag_ok, frag_reason = _model_image_usable(model_path, reject_fragments=True)
+        if size_mismatch or area_ratio < 0.10 or band_broken or not frag_ok:
+            if size_mismatch:
+                reason = (
+                    f"输出 {im_model_raw.width}x{im_model_raw.height} != 配置 "
+                    f"{expected_model_size[0]}x{expected_model_size[1]}"
+                )
+            elif band_broken:
+                reason = (
+                    f"渲染断带特征 (内容高度占比 {h_ratio:.0%}, 宽高比 {aspect:.2f})"
+                )
+            elif not frag_ok:
+                reason = frag_reason
+            else:
+                reason = f"内容占画布 {area_ratio:.0%} < 10%"
+
+            print(
+                f"[image_processor] WARN: 模型图导出异常 ({reason}), "
+                f"弃用 {os.path.basename(model_path)} 回退视口图 — 请检查 Moldflow 窗口状态"
+            )
+            if viewport_path and os.path.exists(viewport_path):
+                try:
+                    Image.open(viewport_path).save(output_path)
+                    return True
+                except Exception as e:
+                    print(f"[image_processor] 视口图直出失败 ({viewport_path}): {e}")
+            return False
 
     # 紧致裁切模型多余白边
     im_model_trimmed = trim_white_borders(im_model_raw, border=8)
     if im_model_trimmed.height == 0 or im_model_trimmed.width == 0:
         return False
-
-    # SaveImage3 离屏导出可靠性差 (实机取证 2026-09-08: 配 2560x1440 却输出
-    # 3840x2160 且模型只渲染出局部 — "模型割裂/不完整"的直接来源)。
-    # 校验 1 (主): 实际输出分辨率 != 配置分辨率 → 导出布局已错乱, 弃用;
-    # 校验 2 (双保险): 内容占画布面积比过低 = 渲染残缺, 同样弃用。
-    # 命中即回退视口图 (完整正确, 与方案 A 同级保底, 绝不输出残缺图)。
-    size_mismatch = bool(
-        expected_model_size
-        and tuple(im_model_raw.size) != tuple(expected_model_size)
-        and all(v > 0 for v in expected_model_size)
-    )
-    area_ratio = (im_model_trimmed.width * im_model_trimmed.height) / float(
-        im_model_raw.width * im_model_raw.height
-    )
-    h_ratio = im_model_trimmed.height / float(im_model_raw.height)
-    aspect = im_model_trimmed.width / float(im_model_trimmed.height)
-    # 渲染断带特征 (实发 2026-09-08 4K 配置: 模型只剩一条横带, 高度占比 30%,
-    # 宽高比 2.66): Fit 后的正常模型高度占比远高于此, 命中即视为残缺。
-    # 权衡: 天然超宽扁零件 Fit 后也可能低占比, 误杀时回退的视口图仍完整可用。
-    band_broken = h_ratio < 0.35 and aspect > 2.2
-    if size_mismatch or area_ratio < 0.10 or band_broken:
-        if size_mismatch:
-            reason = (
-                f"输出 {im_model_raw.width}x{im_model_raw.height} != 配置 "
-                f"{expected_model_size[0]}x{expected_model_size[1]}"
-            )
-        elif band_broken:
-            reason = f"渲染断带特征 (内容高度占比 {h_ratio:.0%}, 宽高比 {aspect:.2f})"
-        else:
-            reason = f"内容占画布 {area_ratio:.0%} < 10%"
-
-        print(
-            f"[image_processor] WARN: 模型图导出异常 ({reason}), "
-            f"弃用 {os.path.basename(model_path)} 回退视口图 — 请检查 Moldflow 窗口状态"
-        )
-        if viewport_path and os.path.exists(viewport_path):
-            try:
-                Image.open(viewport_path).save(output_path)
-                return True
-            except Exception as e:
-                print(f"[image_processor] 视口图直出失败 ({viewport_path}): {e}")
-        return False
+        im_model_trimmed.convert("RGB").save(output_path, "PNG")
+        return True
 
     # 若没有任何数据条，则单独输出模型
     if left_bar is None:

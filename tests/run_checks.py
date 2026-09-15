@@ -159,9 +159,7 @@ def test_resolve_peaks_no_config_fallback(tmp):
     )
     assert r["inj_pressure"] is None
     # 值有效但时刻缺失 (GetMaxValue 回退路径) → 仍无法标注, 不得回退 config
-    r2 = pb.resolve_peaks(
-        {"clamp_force": {"peak_value": 359.8, "peak_time": None}}
-    )
+    r2 = pb.resolve_peaks({"clamp_force": {"peak_value": 359.8, "peak_time": None}})
     assert r2["clamp_force"] is None
 
 
@@ -270,8 +268,9 @@ def config_gui_mod():
 
 
 def test_broken_model_falls_back_to_viewport(tmp):
-    """SaveImage3 残缺导出回归 (实发: 模型只渲染一条横带, 内容占画布 <10%):
-    拼合时必须弃用残缺模型图, 回退视口图直出 (完整正确保底)。"""
+    """残缺失灵图回归 (实发: SaveImage3 只渲染一条横带 / 丢面 / 留悬浮碎片):
+    方案 B 的模型一律取视口完整画面 (见 image_processor.extract_viewport_model),
+    离屏 model_*.png 兜底路径的护栏仍须拦下残缺图 — 两条路径都不得输出残缺模型。"""
     import numpy as np
     from PIL import Image
 
@@ -293,8 +292,10 @@ def test_broken_model_falls_back_to_viewport(tmp):
     vp[100:1000, 400:2000] = (30, 30, 200)
     vp[50:1000, 30:150] = (200, 30, 30)
     Image.fromarray(vp).save(os.path.join(mode_a, "pressure.png"))
-    # 正常色带图 (避免 scale 兜底)
+    # 正常色带图 (带深色内容; 纯白色带会被"空白数据条"护栏拒用, 无数据条时
+    # 拼合退化为"单独输出模型")
     sc = np.full((1100, 200, 3), 255, dtype=np.uint8)
+    sc[100:900, 20:180] = (30, 30, 30)
     Image.fromarray(sc).save(os.path.join(mode_b, "scale_pressure.png"))
 
     out = os.path.join(mode_b, "pressure.png")
@@ -307,12 +308,17 @@ def test_broken_model_falls_back_to_viewport(tmp):
     )
     assert ok, "残缺回退路径未产出"
     arr = np.array(Image.open(out).convert("RGB"))
-    # 输出应为视口图直出 (2112x1136), 而非残缺模型拼合
-    assert arr.shape[:2] == (1136, 2112), f"未按视口图直出: {arr.shape}"
+    # 输出 = 1.58:1 拼合画布 (视口模型裁剪 + 图例), 不再是整张视口图直出
+    assert abs(arr.shape[0] / arr.shape[1] - 1 / 1.58) < 0.02, (
+        f"未按 1.58:1 拼合: {arr.shape}"
+    )
     blue = ((arr[:, :, 2] > 120) & (arr[:, :, 0] < 100)).sum()
-    assert blue > 50000, "视口图内容缺失"
+    assert blue > 500000, f"视口完整模型未进入拼合图 (蓝像素 {blue})"
+    # 残缺图是绿色 → 拼合图里出现绿色即说明用了离屏残缺模型
+    green = ((arr[:, :, 1] > 120) & (arr[:, :, 0] < 100) & (arr[:, :, 2] < 100)).sum()
+    assert green == 0, f"离屏残缺模型被采用 (绿像素 {green})"
 
-    # 正常模型图 (内容占画布 ~55%) 不触发回退, 走正常拼合
+    # 视口模型不可信时 (无视口图) → 仍走离屏兜底, 且三重护栏必须拦下残缺图
     good = np.full((800, 600, 3), 255, dtype=np.uint8)
     good[100:700, 100:500] = (30, 30, 200)
     Image.fromarray(good).save(os.path.join(mode_b, "model_pressure.png"))
@@ -320,37 +326,27 @@ def test_broken_model_falls_back_to_viewport(tmp):
         os.path.join(mode_b, "scale_pressure.png"),
         os.path.join(mode_b, "model_pressure.png"),
         out,
-        viewport_path=os.path.join(mode_a, "pressure.png"),
         target_height=1000,
     )
     assert ok
     arr2 = np.array(Image.open(out).convert("RGB"))
     assert abs(arr2.shape[0] / arr2.shape[1] - 1 / 1.58) < 0.02, (
-        f"正常模型不应走视口直出: {arr2.shape}"
+        f"正常离屏模型应正常拼合: {arr2.shape}"
     )
 
-    # 渲染断带特征 (4K 实发: 内容高度占比 30%, 宽高比 2.66) → 回退视口图;
-    # 同样内容但分辨率与配置一致且非断带 → 正常拼合
+    # 渲染断带特征 (4K 实发: 内容高度占比 30%, 宽高比 2.66) → 无视口时返回 False
     band = np.full((2160, 3840, 3), 255, dtype=np.uint8)
-    band[720:1370, 500:3340] = (
-        30,
-        30,
-        200,
-    )  # trim 后 ~2850x666: 高占比 31%, 宽高比 4.3
+    band[720:1370, 500:3340] = (30, 30, 200)
     Image.fromarray(band).save(os.path.join(mode_b, "model_pressure.png"))
     ok = ip.merge_scale_and_model(
         os.path.join(mode_b, "scale_pressure.png"),
         os.path.join(mode_b, "model_pressure.png"),
         out,
-        viewport_path=os.path.join(mode_a, "pressure.png"),
-        target_height=1000,
         expected_model_size=(3840, 2160),
     )
-    assert ok
-    arr_band = np.array(Image.open(out).convert("RGB"))
-    assert arr_band.shape[:2] == (1136, 2112), f"断带图未回退视口图: {arr_band.shape}"
+    assert not ok, "断带图无可用视口时不得输出残缺拼合图"
 
-    # 分辨率不符 (实发: 配 2560x1440 实出 3840x2160 且渲染残缺) → 弃用回退视口图
+    # 分辨率不符 (实发: 配 2560x1440 实出 3840x2160 且渲染残缺) → 同样弃用
     hi_res = np.full((2160, 3840, 3), 255, dtype=np.uint8)
     hi_res[500:1500, 800:3000] = (30, 30, 200)
     Image.fromarray(hi_res).save(os.path.join(mode_b, "model_pressure.png"))
@@ -358,27 +354,36 @@ def test_broken_model_falls_back_to_viewport(tmp):
         os.path.join(mode_b, "scale_pressure.png"),
         os.path.join(mode_b, "model_pressure.png"),
         out,
-        viewport_path=os.path.join(mode_a, "pressure.png"),
-        target_height=1000,
         expected_model_size=(2560, 1440),
     )
-    assert ok
-    arr3 = np.array(Image.open(out).convert("RGB"))
-    assert arr3.shape[:2] == (1136, 2112), f"分辨率不符未回退视口图: {arr3.shape}"
-    # 分辨率相符的正常大图 → 正常拼合 (不回退)
+    assert not ok, "分辨率不符且无可用视口时不得输出残缺拼合图"
+
+    # 分辨率相符的正常大图 → 正常拼合 (兜底路径可用时保持可用)
     ok = ip.merge_scale_and_model(
         os.path.join(mode_b, "scale_pressure.png"),
         os.path.join(mode_b, "model_pressure.png"),
         out,
-        viewport_path=os.path.join(mode_a, "pressure.png"),
-        target_height=1000,
         expected_model_size=(3840, 2160),
     )
     assert ok
     arr4 = np.array(Image.open(out).convert("RGB"))
     assert abs(arr4.shape[0] / arr4.shape[1] - 1 / 1.58) < 0.02, (
-        f"分辨率相符不应回退: {arr4.shape}"
+        f"分辨率相符不应被弃用: {arr4.shape}"
     )
+
+    # 割裂特征 (实发 2026-09-15: 主体 97.7% + 悬浮碎片 2.2%) 也必须被弃用
+    frag = np.full((1440, 2560, 3), 255, dtype=np.uint8)
+    frag[300:1400, 330:2110] = (30, 30, 200)
+    # 悬浮碎片必须在主体之外 (与主体之间留出纯白空隙, 真实实发场景)
+    frag[810:1040, 100:300] = (30, 30, 200)
+    Image.fromarray(frag).save(os.path.join(mode_b, "model_pressure.png"))
+    ok = ip.merge_scale_and_model(
+        os.path.join(mode_b, "scale_pressure.png"),
+        os.path.join(mode_b, "model_pressure.png"),
+        out,
+        expected_model_size=(2560, 1440),
+    )
+    assert not ok, "割裂 (悬浮碎片) 模型无可用视口时不得直接输出"
 
 
 def test_cover_jpeg_regenerated(tmp):
@@ -906,9 +911,9 @@ def test_canvas_adaptive_height(tmp):
     data_dir = tmp
     mode_b = os.path.join(data_dir, "mode_b")
     os.makedirs(mode_b)
-    # 800px 高的"模型"图 (白底+黑块) 与"色带"图 (带深色内容, 模拟真实图例文字;
-    # 纯白图例会被空白数据条护栏拒用)
-    Image.new("RGB", (600, 800), (255, 255, 255)).save(
+    # 800px 高的"模型"图 (实心; 纯白图已由"空白图"判据拦下, 不再是合法模型)
+    # 与"色带"图 (带深色内容, 模拟真实图例文字; 纯白图例会被护栏拒用)
+    Image.new("RGB", (600, 800), (30, 30, 200)).save(
         os.path.join(mode_b, "model_pressure.png")
     )
     scale_im = Image.new("RGB", (200, 1100), (255, 255, 255))
@@ -930,7 +935,7 @@ def test_canvas_adaptive_height(tmp):
         )
 
     # 源充足 → 画布 = 期望高度
-    Image.new("RGB", (1200, 1400), (255, 255, 255)).save(
+    Image.new("RGB", (1200, 1400), (30, 30, 200)).save(
         os.path.join(mode_b, "model_pressure.png")
     )
     ok = ip.merge_scale_and_model(
@@ -1516,7 +1521,9 @@ def test_slide9_clamp_force_backfill_unconditional(tmp):
     方案没有锁模力结果图时表格残留上个产品的旧吨位且缺失不登记。"""
     src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
     assert "if total_slides >= 9:" in src, "缺 Slide 9 无条件守卫"
-    seg = src.split("锁模力表格回填 (无条件执行)", 1)[1].split("# ------------------ Slide 8", 1)[0]
+    seg = src.split("锁模力表格回填 (无条件执行)", 1)[1].split(
+        "# ------------------ Slide 8", 1
+    )[0]
     assert "resolve_clamp_force" in seg and "clamp_label_kind" in seg
     # 回填块必须在 for p_cfg in fixed_plots 循环之外(4 空格缩进, 非 8 空格循环体)
     for line in seg.splitlines():
@@ -1769,6 +1776,157 @@ def test_main_picture_check_for_vbs_python_path(tmp):
     """P-8: VBS 调 python 必须有 PATH 缺失守卫 (未处理 800A 对话框)。"""
     vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
     assert "PATH 无 python?" in vbs, "python PATH 守卫缺失"
+
+
+def _viewport_with_legend_and_model(h=1136, w=2112, title_right=190):
+    """合成一张 2112x1136 视口图: 左侧图例 (长标题 + 色条 + 刻度) + 右侧模型实体。
+
+    标题块刻意做得比"色条+刻度"更宽 (title_right > 色条右缘 + 刻度右缘) —— 这正是
+    实机截断场景: 旧实现按"色条右侧第一条白隙"切断, 落在色条与刻度之间, 把标题
+    尾部与刻度右半部一起切掉。
+    """
+    import numpy as np
+
+    img = np.full((h, w, 3), 255, dtype=np.uint8)
+    # 标题块 (深色): y 30..60, x 20..title_right
+    img[30:60, 20:title_right] = (20, 20, 20)
+    # 色条 (高饱和): x 60..100, y 200..1000 (与实机一致的高长宽比)
+    for x in range(60, 100):
+        img[200:1000, x] = (255, int(255 * (x - 60) / 40), 0)
+    # 刻度数值: x 105..140
+    img[205:218, 105:140] = (0, 0, 0)
+    img[982:995, 105:140] = (0, 0, 0)
+    # 模型实体: 蓝色实心块 x 400..1900, y 150..1000
+    img[150:1000, 400:1900] = (30, 30, 200)
+    return img
+
+
+def test_legend_extraction_keeps_title_block(tmp):
+    """数据条完整回归 (2026-09-15 实发): 旧实现把切断点定在色条与刻度之间
+    (2112 视口 band x≈130), 标题块 (右缘 137~206 随结果名变化) 与刻度右半部
+    被一并切掉 —— 用户反馈"不可截断其上方的文字信息"。新实现按图例自几何定位,
+    必须完整保住标题块与全部刻度数值, 同时不得把模型卷进数据条。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    img = _viewport_with_legend_and_model()
+    path = os.path.join(tmp, "viewport.png")
+    Image.fromarray(img).save(path)
+
+    left_bar, _triad, _title = ip.extract_viewport_components(path)
+    assert left_bar is not None, "左侧数据条未提取到"
+    lb = np.asarray(left_bar.convert("RGB")).astype(np.int16)
+    # 1) 标题块尾部必须在数据条内 (旧实现此处为白)
+    tail = np.asarray(left_bar.convert("L"))[:70, -25:]
+    assert (tail < 120).sum() > 50, (
+        f"标题块尾部被截断 (数据条 {left_bar.size}, 末 25 列暗像素 {int((tail < 120).sum())})"
+    )
+    # 2) 色条与刻度数值都在
+    sat_cols = ((lb.max(axis=2) - lb.min(axis=2)) > 60).mean(axis=0)
+    assert (sat_cols > 0.4).sum() >= 30, "色条缺失"
+    dark_cols = ((lb.max(axis=2) < 120) & (sat_cols < 0.1)).mean(axis=0)
+    assert (dark_cols > 0.01).sum() >= 20, "刻度数值列缺失"
+    # 3) 模型 (高饱和蓝) 不得被卷进数据条
+    assert left_bar.width < 260, f"数据条过宽, 疑卷入模型 (宽 {left_bar.width})"
+    model_cols = ((lb[:, :, 2] > 150) & (lb[:, :, 0] < 80)).mean(axis=0)
+    assert not (model_cols > 0.2).any(), "数据条里出现模型实体像素"
+
+
+def test_viewport_model_complete_and_chrome_free(tmp):
+    """模型完整性回归 (2026-09-15 实发): 离屏 model_*.png 丢面/留碎片 → 拼合图
+    出现悬浮碎片与缺口。方案 B 的模型必须取视口完整画面 (离屏残缺图不得被采用),
+    且视口铬层 (右侧工具栏 / 右下坐标系 / 底部比例尺与说明) 不得混进模型裁剪图。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    data_dir = tmp
+    mode_a = os.path.join(data_dir, "mode_a")
+    mode_b = os.path.join(data_dir, "mode_b")
+    os.makedirs(mode_a)
+    os.makedirs(mode_b)
+
+    img = _viewport_with_legend_and_model()
+    # 视口铬层: 右侧工具栏 / 右下坐标系 / 底部比例尺主线 + 说明文字
+    img[80:300, 2040:2100] = (40, 40, 40)
+    img[980:1030, 1960:2005] = (10, 10, 10)
+    img[1080:1082, 600:1500] = (96, 96, 96)
+    img[1096:1116, 900:1080] = (30, 30, 30)
+    vp_path = os.path.join(mode_a, "pressure.png")
+    Image.fromarray(img).save(vp_path)
+
+    model = ip.extract_viewport_model(vp_path)
+    assert model is not None, "视口模型未提取到"
+    # 模型实体 bbox = 1500x850 (x 400..1900, y 150..1000), 允许降采样 stride 的少量余量
+    assert abs(model.width - 1500) <= 40, f"模型宽度异常: {model.width}"
+    assert abs(model.height - 850) <= 40, (
+        f"模型高度异常: {model.height} (疑似把底部比例尺/说明文字裁进来)"
+    )
+    marr = np.asarray(model.convert("RGB")).astype(np.int16)
+    gray = (marr.max(axis=2) - marr.min(axis=2)) < 60
+    assert gray.sum() < 0.01 * marr.shape[0] * marr.shape[1], (
+        f"模型裁剪图里残留铬层 (无彩色像素 {int(gray.sum())})"
+    )
+
+    # 离屏模型: 绿底 + 悬浮碎片 → 拼合图必须用视口模型 (蓝), 不得出现绿
+    off = np.full((1440, 2560, 3), 255, dtype=np.uint8)
+    off[300:1400, 330:2110] = (30, 180, 30)
+    off[810:1040, 100:300] = (30, 180, 30)
+    Image.fromarray(off).save(os.path.join(mode_b, "model_pressure.png"))
+    Image.new("RGB", (246, 701), (255, 255, 255)).save(
+        os.path.join(mode_b, "scale_pressure.png")
+    )
+    out = os.path.join(mode_b, "pressure.png")
+    ok = ip.merge_scale_and_model(
+        os.path.join(mode_b, "scale_pressure.png"),
+        os.path.join(mode_b, "model_pressure.png"),
+        out,
+        viewport_path=vp_path,
+        target_height=1440,
+        expected_model_size=(2560, 1440),
+    )
+    assert ok
+    arr = np.array(Image.open(out).convert("RGB"))
+    green = ((arr[:, :, 1] > 120) & (arr[:, :, 0] < 100) & (arr[:, :, 2] < 100)).sum()
+    blue = ((arr[:, :, 2] > 120) & (arr[:, :, 0] < 100)).sum()
+    assert green == 0, f"离屏残缺模型被采用 (绿像素 {green})"
+    assert blue > 500000, f"视口完整模型未进入拼合图 (蓝像素 {blue})"
+
+
+def test_cover_prefers_complete_vbs_model_over_offscreen_result(tmp):
+    """封面回归: 离屏结果渲染 model_pressure.png 有割裂特征时, resolve_cover_image
+    必须改选完整的 VBS 纯模型导出 solid_model.png, 不得把残缺图写回封面。"""
+    import numpy as np
+    from PIL import Image
+
+    from core import image_processor as ip
+
+    data_dir = tmp
+    mode_a = os.path.join(data_dir, "mode_a")
+    mode_b = os.path.join(data_dir, "mode_b")
+    os.makedirs(mode_a)
+    os.makedirs(mode_b)
+    # 完整的纯模型导出 (实心块)
+    solid = np.full((720, 1280, 3), 255, dtype=np.uint8)
+    solid[60:660, 80:1200] = (120, 130, 140)
+    Image.fromarray(solid).save(os.path.join(data_dir, "solid_model.png"))
+    # 割裂的离屏结果渲染 (主体 + 悬浮碎片)
+    frag = np.full((1440, 2560, 3), 255, dtype=np.uint8)
+    frag[300:1400, 330:2110] = (30, 30, 200)
+    # 悬浮碎片必须在主体之外 (与主体之间留出纯白空隙, 真实实发场景)
+    frag[810:1040, 100:300] = (30, 30, 200)
+    Image.fromarray(frag).save(os.path.join(mode_b, "model_pressure.png"))
+
+    chosen = ip.resolve_cover_image(data_dir)
+    assert chosen, "封面必须选出可用源"
+    arr = np.array(Image.open(chosen).convert("RGB")).astype(np.int16)
+    # 选中的是灰色纯模型 (120,130,140) 而非蓝色离屏结果 → 无强蓝像素
+    strong_blue = ((arr[:, :, 2] > 150) & (arr[:, :, 0] < 80)).sum()
+    assert strong_blue == 0, "封面仍选用了离屏残缺结果图"
+    assert chosen == os.path.join(data_dir, "solid_model.png")
 
 
 def main():

@@ -1274,8 +1274,8 @@ def build_single_report(
 
         # 替换封面模型图 (纯模型本体截图，无网格、无节点)
         # 方案 A/B 共用同一条路径: 走 resolve_cover_image 选取最佳可用模型本体图
-        # (优先 mode_b/model_pressure.png → mode_b/model_volumetric_shrinkage.png → solid_model.png,
-        #  并对命中候选做非空/非割裂完整性校验 + 裁白边写回)。
+        # (优先 VBS 离屏纯模型导出 solid_model.png → 视口模型裁剪 → 离屏结果渲染,
+        #  候选经非空/非断带/非割裂完整性校验 + 裁白边写回)。
         solid_img = None
         if resolve_cover_image is not None:
             try:
