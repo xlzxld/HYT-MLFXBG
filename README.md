@@ -38,8 +38,11 @@ python config_gui.py          # 或直接双击 start.bat
 | `templates/` | 报告母版 PPTX（唯一入库母版，配置以相对路径引用） |
 | `tests/run_checks.py` | 零依赖回归测试（无需 Moldflow 与模板） |
 | `check_env.py` | 环境预检脚本 |
+| `probe_api.py` | Moldflow API 探针（官方 `synapi.chm` 全量目录 / 仓库用法对照 / 实机 COM 探测） |
+| `MakeCoolingCircuit.vbs` / `_v1.vbs` | 冷却水路测试数据生成宏（研究里没有冷却水路时用它造数据验证勾选框；两版并存二选一） |
+| `OrientModel.vbs` | 模型定向宏（选中面 → 面心归零到 0,0,0、面朝向 `前`；网格/节点/CAD 整体变换，手动运行） |
 | `temp/` | 运行期中间产物（**已忽略，不入库**） |
-| `enforcement/` | 契约机械执法层母版包（见下） |
+| `.agents/enforcement/` | 契约机械执法层母版包（见下） |
 
 ---
 
@@ -50,18 +53,18 @@ python config_gui.py          # 或直接双击 start.bat
 | [`使用说明.md`](使用说明.md) | 最终用户（模流工程师） | 功能详解、四种使用方式、配置详解、FAQ |
 | [`AI_GUIDE.md`](AI_GUIDE.md) | AI / 接手维护者 | 架构机制、核心模块职责、**10 大技术坑**、命令速查、数据契约与产物判读 |
 | [`AGENTS.md`](AGENTS.md) | 所有 AI 编码助手 | 项目契约：铁律 / 行为契约 / 验证门禁 §2 / 红线 / 触发词映射 |
-| [`AUDIT-SPEC.md`](AUDIT-SPEC.md) | 说"体检"时 | 只读扫描细则（四大靶心 + P0~P3 分级） |
-| [`BOOTSTRAP.md`](BOOTSTRAP.md) | 新项目部署时 | 三件套 + `enforcement/` 的部署与适配流程 |
+| [`AUDIT-SPEC.md`](.agents/AUDIT-SPEC.md) | 说"体检"时 | 只读扫描细则（四大靶心 + P0~P3 分级） |
+| [`BOOTSTRAP.md`](.agents/BOOTSTRAP.md) | 新项目部署时 | 三件套 + `.agents/enforcement/` 的部署与适配流程 |
 | [`PROJECT_SESSIONS.md`](PROJECT_SESSIONS.md) | AI 新会话启动 | 会话追踪与断点索引 |
 | [`PLAN.md`](PLAN.md) | 历史存档 | 2026-09-06 全方位优化计划与分阶段评审结论 |
-| [`enforcement/README.md`](enforcement/README.md) | 维护者 | 执法包四步安装与覆盖对照表 |
+| [`enforcement/README.md`](.agents/enforcement/README.md) | 维护者 | 执法包四步安装与覆盖对照表 |
 
 ---
 
 ## 四、 契约与机械执法 (enforcement)
 
-本项目遵循 `AGENTS.md` v2.1.1：**文档管行为，钩子兜底线**。
-`enforcement/` 是执法层的**母版包**；其 4 个文件已按 `enforcement/README.md` 落地到本仓库：
+本项目遵循 `AGENTS.md` v3.2.0：**文档管行为，钩子兜底线**。
+`.agents/enforcement/` 是执法层的**母版包**；其 4 个文件已按 `.agents/enforcement/README.md` 落地到本仓库：
 
 | 落地位置 | 作用 | 覆盖的契约规则 |
 |---|---|---|
@@ -91,13 +94,13 @@ npm i -D @commitlint/cli @commitlint/config-conventional   # commitlint 钩子�
 
 ```powershell
 # ① 语法/静态检查
-python -m py_compile config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py check_env.py
+python -m py_compile config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py check_env.py tests/run_checks.py
 
 # ② 零依赖回归 (无需 Moldflow 与模板)
 python tests/run_checks.py
 
 # ③ 格式化检查
-python -m ruff format --check config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py
+python -m ruff format --check config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py check_env.py tests/run_checks.py
 
 # ④ 方案 B 端到端冒烟 (退出码: 0=成功, 1=环境问题, 2=构建失败)
 python core/pptx_builder.py --config report_config.json --data-dir temp --mode B --no-open --output temp\smoke.pptx
