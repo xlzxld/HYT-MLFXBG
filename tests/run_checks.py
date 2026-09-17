@@ -2483,6 +2483,48 @@ def test_vbs_entity_display_switch(tmp):
     assert "Sub ApplyEntityVisibility(" not in vbs, "旧的按类型一刀切实现在不并存"
 
 
+def test_vbs_array_element_nothing_guard(tmp):
+    """定长数组元素判空必须先 IsEmpty 守卫 (实机 800A01A8 事故回归, 2026-09-17)。
+
+    背景: TempHideLayers(3)/CatPreds(3) 是定长数组, Dim 之后元素是 Empty;
+    "按属性分类"扫不到某类别时 (本方案只有热流道/冷却水路/注射位置, 冷流道 0 属性)
+    CollectCategoryLayers 提前返回, 该类的 CatPreds(cat) 一直保持 Empty;
+    VBScript 对 Empty 求 "Is Nothing" 抛 缺少对象(800A01A8) —— 第一张截图应用
+    实体显示时就整个脚本中断 (日志止于 "实体放置: 热流道 -> 原图层")。
+    规则: 文件里任何 "<名>(<下标>) Is Nothing" 之前必须先出现 "IsEmpty(同一表达式)"。
+    """
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert "IsEmpty(TempHideLayers(cat))" in vbs, "TempHideLayers 缺 IsEmpty 守卫"
+    assert "IsEmpty(CatPreds(cat))" in vbs, "CatPreds 缺 IsEmpty 守卫"
+    seen = 0
+    offset = 0
+    for line in vbs.splitlines():
+        s = line.strip()
+        k = s.find(" Is Nothing")
+        if k > 0:
+            left = s[:k].strip()
+            for prefix in ("If Not ", "If "):
+                if left.startswith(prefix):
+                    left = left[len(prefix) :].strip()
+                    break
+            # 只看数组元素形式 name(...); 简单变量由各自的 Set x = Nothing 兜底
+            if "(" in left and left.endswith(")") and " " not in left:
+                assert f"IsEmpty({left})" in vbs[:offset], (
+                    f"{left} 判空前没有 IsEmpty 守卫 (Empty 求 Is Nothing 抛 800A01A8)"
+                )
+                seen += 1
+        offset += len(line) + 2  # 本文件全程 CRLF
+    assert seen >= 2, "未扫描到数组元素判空点 (守卫可能被整体删除)"
+    i0 = vbs.find("Sub PlaceCategoryGroup")
+    i1 = vbs.find("End Sub", i0)
+    body = vbs[i0:i1]
+    for expr in ("TempHideLayers(cat)", "CatPreds(cat)"):
+        g = body.find(f"If IsEmpty({expr}) Then Exit Sub")
+        n = body.find(f"If {expr} Is Nothing Then Exit Sub")
+        assert g >= 0, f"PlaceCategoryGroup 缺少 {expr} 的 IsEmpty 守卫"
+        assert g < n, f"{expr} 的 IsEmpty 守卫必须写在 Is Nothing 之前"
+
+
 def test_vbs_cover_and_mesh_type_separation(tmp):
     """封面 / Slide 2 网格图按"类型"分离 (2026-09-17 需求 3 修订)。
 

@@ -1357,6 +1357,11 @@ Sub PlaceCategoryGroup(cat, pVisible)
     Dim lst, parts, k, lname, lyr, pLbl, pAnd, ok
     If LayerManager Is Nothing Then Exit Sub
     If cat < 0 Or cat > 3 Then Exit Sub
+    ' 定长数组元素未赋值时是 Empty; 对 Empty 求 "Is Nothing" 抛 800A01A8(缺少对象)。
+    ' 实机事故 2026-09-17: 方案只有热流道/冷却水路/注射位置三类属性 -> 冷流道无属性
+    ' -> CollectCategoryLayers 提前返回 -> CatPreds(1) 保持 Empty -> 第二类判空即中断整脚本。
+    If IsEmpty(TempHideLayers(cat)) Then Exit Sub
+    If IsEmpty(CatPreds(cat)) Then Exit Sub
     If TempHideLayers(cat) Is Nothing Then Exit Sub
     If CatPreds(cat) Is Nothing Then Exit Sub
     ok = False
