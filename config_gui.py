@@ -56,29 +56,72 @@ DEFAULT_PLOT_KEYS = {
     "volumetric_shrinkage",
     "sink_marks",
     "warpage_all",
+    "warpage_x",
+    "warpage_y",
+    "warpage_z",
 }
 
 # 页码范围: 模板内容 1-16 已固定, 17+ 用于动态追加; 上下限放宽方便 alt 分配
 SLIDE_MIN = 4
 SLIDE_MAX = 32
 
-# 实体显示开关 (2026-09-15 用户需求): 分析方案里带冷流道 / 热流道 / 冷却水路时,
-# 它们会一起进入截图; 这三项默认不勾选 = 截图里不显示它们, 勾选后才纳入截图。
-# (config key, 界面文案)
+# 实体显示开关。注射位置 (2026-09-17 用户定案): 默认=True(保持显示, 脚本绝不动它),
+# 只有显式勾选才强制在截图里显示 —— 与冷/热/水"勾选=显示、不勾=隐藏"不同。
 ENTITY_DISPLAY_ITEMS = [
     ("show_cold_runner", "冷流道"),
     ("show_hot_runner", "热流道"),
     ("show_cooling_channels", "冷却水 (水路)"),
+    ("show_injection", "注射位置"),
 ]
 ENTITY_DISPLAY_KEYS = [k for k, _ in ENTITY_DISPLAY_ITEMS]
 
+# 注射位置默认勾选; 其余默认不勾选 (缺失/类型错一律按此默认, 绝不臆造)
+ENTITY_DISPLAY_DEFAULTS = {k: (k == "show_injection") for k in ENTITY_DISPLAY_KEYS}
+
+# 每个结果页可单独覆盖的实体显示项 (config: plots[i].display.<plot 字段名>)
+PLOT_DISPLAY_FIELDS = [
+    ("cold_runner", "冷"),
+    ("hot_runner", "热"),
+    ("cooling_channels", "水"),
+    ("injection", "注"),
+]
+PLOT_DISPLAY_TO_ENTITY = {
+    "cold_runner": "show_cold_runner",
+    "hot_runner": "show_hot_runner",
+    "cooling_channels": "show_cooling_channels",
+    "injection": "show_injection",
+}
+
 
 def get_entity_display(cfg):
-    """读实体显示开关; 缺失/类型错一律按 False (默认不显示), 绝不臆造为显示。"""
+    """读实体显示开关; 缺失/类型错一律按 ENTITY_DISPLAY_DEFAULTS (绝不臆造为显示)。"""
     raw = (cfg or {}).get("entity_display")
     if not isinstance(raw, dict):
         raw = {}
-    return {k: bool(raw.get(k, False)) for k in ENTITY_DISPLAY_KEYS}
+    return {
+        k: bool(raw.get(k, ENTITY_DISPLAY_DEFAULTS[k])) for k in ENTITY_DISPLAY_KEYS
+    }
+
+
+def get_capture_settings(cfg):
+    """读截图取景设置; 缺失/类型错按默认: fit=True, zoom=1.0, restore_view=True。"""
+    raw = (cfg or {}).get("capture_settings")
+    if not isinstance(raw, dict):
+        raw = {}
+    fit = raw.get("fit", True)
+    zoom = raw.get("zoom", 1.0)
+    restore = raw.get("restore_view", True)
+    try:
+        zoom = float(zoom)
+    except (TypeError, ValueError):
+        zoom = 1.0
+    if not (0.1 <= zoom <= 5.0):
+        zoom = 1.0
+    return {
+        "fit": bool(fit),
+        "zoom": round(zoom, 2),
+        "restore_view": bool(restore),
+    }
 
 
 def load_config():
@@ -265,6 +308,9 @@ class ConfigApp:
         self._slide_traced = set()
         self.plot_checkbuttons = {}
         self.plot_label_base = {}
+        self.plot_disp_vars = {}
+        self.plot_disp_checks = {}
+        self.plot_disp_touched = set()
         self.adv_open = False
 
         self.run_proc = None
@@ -358,9 +404,19 @@ class ConfigApp:
             ttk.Checkbutton(ent_row, text=elabel, variable=self.entity_vars[ekey]).pack(
                 side=tk.LEFT, padx=(0, 14)
             )
+        for ekey in ENTITY_DISPLAY_KEYS:
+            self.entity_vars[ekey].trace_add(
+                "write", lambda *_a: self._on_global_entity_change()
+            )
         ttk.Label(
             ent_group,
-            text="冷流道/热流道/冷却水在 Moldflow 里都是梁(曲线)单元, 三者同源: 勾选任一项即显示该类单元。",
+            text=(
+                "按属性识别(实测): 热流道=热流道/热浇口/热主浇道, "
+                "冷却水路=管道/冷却液入口/冷却回路。\n"
+                "冷/热/水: 勾选=截图里显示, 不勾=隐藏。"
+                "注射位置: 默认勾选(脚本不会动它), 取消勾选也不隐藏。\n"
+                "下方结果列表里每一行还能单独定制四项显示(改过的那行不再跟随这里)。"
+            ),
             foreground="#888888",
         ).pack(anchor=tk.W, pady=(2, 0))
 
@@ -493,6 +549,32 @@ class ConfigApp:
             text="保留操作界面模型摆放视角 (防止与左侧色带重叠)",
             variable=self.keep_view_var,
         ).grid(row=3, column=0, columnspan=3, sticky=tk.W)
+        cap_cfg = get_capture_settings(self.cfg)
+        self.cap_fit_var = tk.BooleanVar(value=cap_cfg["fit"])
+        self.cap_restore_var = tk.BooleanVar(value=cap_cfg["restore_view"])
+        self.cap_zoom_var = tk.StringVar(value=str(cap_cfg["zoom"]))
+        ttk.Checkbutton(
+            quality_group,
+            text="截图取景归一 (推荐勾选: 先 Fit 再截图, 不受你的缩放/平移影响)",
+            variable=self.cap_fit_var,
+        ).grid(row=4, column=0, columnspan=3, sticky=tk.W)
+        ttk.Label(quality_group, text="余量缩放").grid(row=5, column=0, sticky=tk.W)
+        ttk.Spinbox(
+            quality_group,
+            from_=0.5,
+            to=1.5,
+            increment=0.05,
+            width=6,
+            textvariable=self.cap_zoom_var,
+        ).grid(row=5, column=1, sticky=tk.W, padx=5)
+        ttk.Label(quality_group, text="(1.00=铺满; 0.90=四周留 10% 边距)").grid(
+            row=5, column=2, sticky=tk.W
+        )
+        ttk.Checkbutton(
+            quality_group,
+            text="跑完还原运行前的视角与显示 (书签回放)",
+            variable=self.cap_restore_var,
+        ).grid(row=6, column=0, columnspan=3, sticky=tk.W)
 
         policy_group = ttk.Frame(self.adv_frame)
         policy_group.pack(fill=tk.X, pady=(0, 4))
@@ -598,6 +680,7 @@ class ConfigApp:
         # 完全不可见)。plot_label_base 是纯文本缓存, 保留无害。
         self.plot_checkbuttons = {}
         plots = self.cfg.get("plots", [])
+        self.plot_disp_checks = {}
         for p in plots:
             k = p["key"]
             if k not in self.plot_vars:
@@ -677,9 +760,52 @@ class ConfigApp:
                     "%P",
                 ),
             ).pack(side=tk.LEFT)
+            # 每页实体显示覆盖 (2026-09-17 需求 2): 默认值跟随全局,
+            # 用户改过该行即为该页定制, 之后不再被全局联动覆盖。
+            if k not in self.plot_disp_vars:
+                pdisp = p.get("display")
+                if not isinstance(pdisp, dict):
+                    pdisp = {}
+                self.plot_disp_vars[k] = {
+                    dfld: tk.BooleanVar(
+                        value=bool(pdisp.get(dfld, get_entity_display(self.cfg)[ekey]))
+                    )
+                    for dfld, ekey in PLOT_DISPLAY_TO_ENTITY.items()
+                }
+            ttk.Label(row, text="显示").pack(side=tk.LEFT, padx=(10, 2))
+            row_state = "normal" if p.get("enabled", False) else "disabled"
+            for dfld, dlabel in PLOT_DISPLAY_FIELDS:
+                cb2 = ttk.Checkbutton(
+                    row,
+                    text=dlabel,
+                    variable=self.plot_disp_vars[k][dfld],
+                    state=row_state,
+                    command=lambda key=k: self._mark_plot_disp_touched(key),
+                )
+                cb2.pack(side=tk.LEFT, padx=(0, 2))
+                self.plot_disp_checks.setdefault(k, []).append(cb2)
+
+    def _mark_plot_disp_touched(self, key):
+        """该页四个小勾被人工改动: 标记为定制, 之后不再跟随全局。"""
+        self.plot_disp_touched.add(key)
+
+    def _on_global_entity_change(self):
+        """全局实体显示变化: 尚未定制的行同步跟随, 定制过的行保持不变。"""
+        for key, dvars in self.plot_disp_vars.items():
+            if key in self.plot_disp_touched:
+                continue
+            for dfld, var in dvars.items():
+                var.set(bool(self.entity_vars[PLOT_DISPLAY_TO_ENTITY[dfld]].get()))
+
+    def _sync_plot_disp_state(self, key):
+        """结果页未勾选时, 该行四个显示小勾灰显 (避免误以为生效)。"""
+        state = "normal" if self.plot_vars[key].get() else "disabled"
+        for cb in self.plot_disp_checks.get(key, []):
+            cb.configure(state=state)
 
     def _on_slide_or_check_change(self, key):
         """页码或勾选状态变化: 同步标签前缀; 备选项被首次勾选时若页码空, 自动分配下一个未占用页码。"""
+        self._sync_plot_disp_state(key)
         sv = self.slide_vars.get(key)
         enabled = bool(self.plot_vars.get(key, tk.BooleanVar()).get())
         if enabled and sv is not None and not sv.get().strip():
@@ -777,6 +903,17 @@ class ConfigApp:
         self.cfg["entity_display"] = {
             ekey: bool(self.entity_vars[ekey].get()) for ekey in ENTITY_DISPLAY_KEYS
         }
+        try:
+            zoom_val = float(self.cap_zoom_var.get())
+        except (TypeError, ValueError):
+            zoom_val = 1.0
+        if not (0.1 <= zoom_val <= 5.0):
+            zoom_val = 1.0
+        self.cfg["capture_settings"] = {
+            "fit": bool(self.cap_fit_var.get()),
+            "zoom": round(zoom_val, 2),
+            "restore_view": bool(self.cap_restore_var.get()),
+        }
         self.cfg["on_missing_data"] = self.on_missing_var.get()
 
         if "image_settings" not in self.cfg:
@@ -823,6 +960,11 @@ class ConfigApp:
                     # 空值/非法: 取消勾选即等同"该条目不要页", 留 None 落盘以便复用
                     p["slide"] = None
             # 动态合并项未勾选时不落盘, 配置保持精简 (下次启动按清单重新合并)
+            if k in self.plot_disp_vars:
+                p["display"] = {
+                    dfld: bool(var.get())
+                    for dfld, var in self.plot_disp_vars[k].items()
+                }
             if p.get("dynamic") and not p.get("enabled"):
                 continue
             kept_plots.append(p)

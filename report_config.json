@@ -1,13 +1,14 @@
 {
   "template_pptx": "templates/Moldflow报告模板.pptx",
-  "output_dir": "",
+  "output_dir": "C:/Users/5600/Documents/MLFX Report/26/09/09.17",
   "open_after_export": true,
   "show_gui_before_run": true,
   "screenshot_mode": "BOTH",
   "entity_display": {
     "show_cold_runner": false,
     "show_hot_runner": false,
-    "show_cooling_channels": false
+    "show_cooling_channels": false,
+    "show_injection": true
   },
   "image_settings": {
     "width": 2560,
@@ -33,7 +34,13 @@
       "key": "filling_animation",
       "plot_name": "充填时间",
       "enabled": true,
-      "desc": "★ 动态充填动画 (GIF 动图)"
+      "desc": "★ 动态充填动画 (GIF 动图)",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": 5,
@@ -45,7 +52,13 @@
       "key": "pressure",
       "plot_name": "压力",
       "enabled": true,
-      "desc": "★ 充填结束时的压力"
+      "desc": "★ 充填结束时的压力",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": 6,
@@ -57,7 +70,13 @@
       "key": "vp_switch_pressure",
       "plot_name": "速度/压力切换时的压力",
       "enabled": true,
-      "desc": "★ V/P 转换及其压力分布"
+      "desc": "★ V/P 转换及其压力分布",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": 7,
@@ -69,7 +88,13 @@
       "key": "inj_pressure_xy",
       "plot_name": "注射位置处压力:XY 图",
       "enabled": true,
-      "desc": "★ 注射位置处压力 XY 图 (可覆盖标题)"
+      "desc": "★ 注射位置处压力 XY 图 (可覆盖标题)",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": 8,
@@ -81,7 +106,13 @@
       "key": "flow_front_temp",
       "plot_name": "流动前沿温度",
       "enabled": true,
-      "desc": "★ 流动前沿温度"
+      "desc": "★ 流动前沿温度",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": 9,
@@ -93,7 +124,13 @@
       "key": "clamp_force_xy",
       "plot_name": "锁模力:XY 图",
       "enabled": true,
-      "desc": "★ 锁模力 XY 图 (可覆盖标题)"
+      "desc": "★ 锁模力 XY 图 (可覆盖标题)",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": 10,
@@ -105,7 +142,13 @@
       "key": "weld_lines",
       "plot_name": "熔接线",
       "enabled": true,
-      "desc": "★ 熔接线分布"
+      "desc": "★ 熔接线分布",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": 11,
@@ -117,7 +160,13 @@
       "key": "volumetric_shrinkage",
       "plot_name": "体积收缩率",
       "enabled": true,
-      "desc": "★ 体积收缩率"
+      "desc": "★ 体积收缩率",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": 12,
@@ -129,7 +178,13 @@
       "key": "sink_marks",
       "plot_name": "缩痕估算",
       "enabled": true,
-      "desc": "★ 缩痕估算分布"
+      "desc": "★ 缩痕估算分布",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": 13,
@@ -141,7 +196,13 @@
       "key": "warpage_all",
       "plot_name": "变形，所有效应:变形",
       "enabled": true,
-      "desc": "★ 变形: 所有效应变形"
+      "desc": "★ 变形: 所有效应变形",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": 14,
@@ -152,8 +213,22 @@
       "type": "image",
       "key": "warpage_x",
       "plot_name": "变形，所有效应:X 方向",
-      "enabled": false,
-      "desc": "★ 变形: 所有效应: X 方向"
+      "enabled": true,
+      "desc": "★ 变形: 所有效应: X 方向",
+      "view_settings": {
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "fit": true
+      },
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": 15,
@@ -164,8 +239,22 @@
       "type": "image",
       "key": "warpage_y",
       "plot_name": "变形，所有效应:Y 方向",
-      "enabled": false,
-      "desc": "★ 变形: 所有效应: Y 方向"
+      "enabled": true,
+      "desc": "★ 变形: 所有效应: Y 方向",
+      "view_settings": {
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "fit": true
+      },
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": 16,
@@ -176,7 +265,7 @@
       "type": "image",
       "key": "warpage_z",
       "plot_name": "变形，所有效应:Z 方向",
-      "enabled": false,
+      "enabled": true,
       "desc": "★ 变形: 所有效应: Z 方向 (垂直视角)",
       "view_settings": {
         "rotation": [
@@ -185,6 +274,12 @@
           0
         ],
         "fit": true
+      },
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
       }
     },
     {
@@ -197,7 +292,13 @@
       "key": "temp_bulk",
       "plot_name": "气穴",
       "enabled": false,
-      "desc": "气穴分布"
+      "desc": "气穴分布",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": null,
@@ -209,7 +310,13 @@
       "key": "warp_diff_cooling",
       "plot_name": "变形，冷却不均:变形",
       "enabled": false,
-      "desc": "冷却不均导致的变形"
+      "desc": "冷却不均导致的变形",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": null,
@@ -221,7 +328,13 @@
       "key": "warp_diff_shrinkage",
       "plot_name": "变形，收缩不均:变形",
       "enabled": false,
-      "desc": "收缩不均导致的变形"
+      "desc": "收缩不均导致的变形",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     },
     {
       "slide": null,
@@ -233,11 +346,26 @@
       "key": "warp_orientation",
       "plot_name": "变形，分子取向:变形",
       "enabled": false,
-      "desc": "分子/纤维取向导致的变形"
+      "desc": "分子/纤维取向导致的变形",
+      "display": {
+        "cold_runner": false,
+        "hot_runner": false,
+        "cooling_channels": false,
+        "injection": true
+      }
     }
   ],
   "clamp_force_settings": {
     "machine_max_ton": null
   },
-  "on_missing_data": "annotate"
+  "on_missing_data": "annotate",
+  "orient_settings": {
+    "target_axis": "Z",
+    "flip_normal": false
+  },
+  "capture_settings": {
+    "fit": true,
+    "zoom": 1.0,
+    "restore_view": true
+  }
 }

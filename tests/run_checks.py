@@ -462,6 +462,111 @@ def test_conclusion_rows_cleared(tmp):
     assert "0.03mm" in gf.cell(1, 1).text, "分析要求(通用标准)不应被清空"
 
 
+def test_material_optional_blank_field(tmp):
+    """材料基本信息: 测试日期等可空字段无数据时必须留空 (用户定案 2026-09-16)。
+
+    回归: 旧实现把空值画成红色"数据缺失" (#c00000); 现应留空且无红字。
+    """
+    import json as _json
+
+    import numpy as np
+    from PIL import Image
+
+    info = {
+        "data_complete": True,
+        "material_id": "10444",
+        "trade_name": "Novodur HH-106",
+        "manufacturer": "INEOS Styrolution",
+        "family_name": "ABS",
+        "abbreviation": "ABS",
+        "material_type": "Amorphous",
+        "data_source": "Manufacturer",
+        "date_modified": "08-OCT-02",
+        # date_tested 故意缺失
+        "data_status": "Non-Confidential",
+        "grade_code": "CM10444",
+        "supplier_code": "STYROLUT",
+        "fiber_filler": "未填充",
+        "mold_temp_min": 60.0,
+        "mold_temp_max": 80.0,
+        "mold_temp_rec": 70.0,
+        "melt_temp_min": 230.0,
+        "melt_temp_max": 260.0,
+        "melt_temp_rec": 250.0,
+        "melt_temp_max_abs": 300.0,
+        "ejection_temp": 105.0,
+        "max_shear_stress": 0.5,
+        "max_shear_rate": 60000.0,
+    }
+    with open(os.path.join(tmp, "material_info.json"), "w", encoding="utf-8") as f:
+        _json.dump(info, f, ensure_ascii=False)
+
+    pb.render_material_dialog_cards(tmp)
+    im = np.asarray(Image.open(os.path.join(tmp, "material_basic.png")).convert("RGB"))
+    red = int(((im[:, :, 0] > 150) & (im[:, :, 1] < 60) & (im[:, :, 2] < 60)).sum())
+    assert red == 0, f"测试日期等可空字段不应出现红色缺失标记, 实际红色像素 {red}"
+
+
+def test_material_verified_text_ids(tmp):
+    """材料基本信息 (2026-09-16 实机取证): 文本字段 ID 表 + 从 desc 取值 + 优先级。
+
+    回归点: ① 旧表 (1987-1990/20031) 的 ID 实机并不存在, 已换成逐值核对过的表;
+             ② 文本内容写在 desc 里 (旧代码读 values 恒为空);
+             ③ "数据来源" 长文本不得被"制造商"关键字抢先命中。
+    """
+    import json as _json
+
+    from core import pptx_builder as pb
+
+    fields = [
+        {"id": 1991, "desc": "10444", "values": ""},
+        {"id": 1992, "desc": "ACRYLONITRILE COPOLYMERS (ABS, ASA, ...)", "values": ""},
+        {"id": 1993, "desc": "CM10444", "values": ""},
+        {"id": 1994, "desc": "STYROLUT", "values": ""},
+        {"id": 1995, "desc": "Amorphous", "values": ""},
+        {"id": 1996, "desc": "", "values": ""},
+        {"id": 1997, "desc": "INEOS Styrolution", "values": ""},
+        {"id": 1998, "desc": "Novodur HH-106", "values": ""},
+        {"id": 1999, "desc": "ABS", "values": ""},
+        {
+            "id": 1633,
+            "desc": "Manufacturer (INEOS Styrolution) : pvT-Measured : mech-Measured",
+            "values": "",
+        },
+        {"id": 1898, "desc": "08-OCT-02", "values": ""},
+        {"id": 1899, "desc": "Non-Confidential", "values": ""},
+        {"id": 1808, "desc": "", "values": "60|80"},
+        {"id": 1800, "desc": "", "values": "230|260"},
+        {"id": 1504, "desc": "", "values": "105"},
+    ]
+    payload = {
+        "prop_name": "Novodur HH-106 : INEOS Styrolution",
+        "material_name": "Novodur HH-106 : INEOS Styrolution",
+        "material_id": "2",
+        "prop_type": 21000,
+        "fields": fields,
+    }
+    with open(os.path.join(tmp, "material_fields.json"), "w", encoding="utf-8") as f:
+        _json.dump(payload, f, ensure_ascii=False)
+
+    info = pb.build_material_info(tmp)
+    assert info.get("family_name") == "ACRYLONITRILE COPOLYMERS (ABS, ASA, ...)", info
+    assert info.get("trade_name") == "Novodur HH-106", info
+    assert info.get("manufacturer") == "INEOS Styrolution", info
+    assert info.get("abbreviation") == "ABS", info
+    assert info.get("material_type") == "Amorphous", info
+    assert str(info.get("data_source", "")).startswith("Manufacturer (INEOS"), info
+    assert info.get("data_status") == "Non-Confidential", info
+    assert info.get("grade_code") == "CM10444", info
+    assert info.get("supplier_code") == "STYROLUT", info
+    assert info.get("date_modified") == "08-OCT-02", info
+    assert info.get("material_id") == "10444", info
+    assert info.get("mold_temp_min") == 60 and info.get("mold_temp_max") == 80, info
+    assert info.get("ejection_temp") == 105, info
+    assert not info.get("date_tested"), info
+    assert info.get("fiber_filler") == "未填充", info  # 取不到时按用户定案显示
+
+
 def test_material_fields_mapping(tmp):
     """material_fields.json (VBS 官方字段枚举原始导出) → material_info.json 键值映射。"""
     fields = {
@@ -566,6 +671,99 @@ def test_material_id_sentinel(tmp):
         json.dump(fields, f, ensure_ascii=False)
     info = pb.build_material_info(tmp)
     assert info["material_id"] == "" and info["data_complete"] is False
+
+
+def test_vbs_root_copy_uses_file_copy(tmp):
+    """提速回归 (2026-09-17): 根目录结果图副本优先用文件拷贝 (mode_a 已写成时),
+    避免每页多一次离屏渲染; mode_a 缺失时仍回退到 Viewer.SaveImage,
+    C-06 的错误保护与 WARN 日志必须保留。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    seg = vbs.split("根目录副本: mode_a", 1)[1].split("On Error GoTo 0", 1)[0]
+    assert "FSO.CopyFile ModeADir" in seg, "根目录副本未使用文件拷贝 (未提速)"
+    assert "Viewer.SaveImage TempDir" in seg, "缺少 mode_a 缺失时的截图回退"
+    assert "On Error Resume Next" in seg, "错误保护 (C-06) 丢失"
+    assert "根目录副本截图异常" in seg, "WARN 日志丢失"
+
+
+def test_gif_optimize_dedup(tmp):
+    """提速回归 (2026-09-17): 双方案构建时同一 GIF 只优化一次。"""
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    assert "_GIF_OPTIMIZED_STAMPS = set()" in src, "缺少 GIF 优化去重集合"
+    assert "if _gif_stamp in _GIF_OPTIMIZED_STAMPS:" in src, "未按指纹跳过重复优化"
+    assert "_GIF_OPTIMIZED_STAMPS.add(_gif_stamp)" in src, "未登记已优化指纹"
+
+
+def test_vbs_cleanup_labels_ordering(tmp):
+    """回归 (2026-09-17 实机 800A01A8): CleanupEntityLabels 必须在
+    Set LayerManager = Synergy.LayerManager() 之后调用 (否则空变量 Is Nothing
+    抛"缺少对象"), 且子过程自身要带 IsEmpty 守卫。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    i_set = vbs.find("Set LayerManager = Synergy.LayerManager()")
+    i_call = vbs.find("Call CleanupEntityLabels()")
+    assert i_set > 0 and i_call > 0, "缺少 LayerManager 赋值或标签清理调用"
+    assert i_call > i_set, "标签清理必须在 LayerManager 赋值之后调用 (否则 800A01A8)"
+    assert "If IsEmpty(LayerManager) Then Exit Sub" in vbs, "缺少 IsEmpty 守卫"
+    assert vbs.count("Call CleanupEntityLabels()") == 1, "标签清理只应调用一次"
+
+
+def test_viewport_model_preferred_with_validation(tmp):
+    """模型来源定案 (2026-09-17 两轮实机取证):
+
+    - 离屏优先 -> 用户反馈 5/6/8/11 页"图片不完整" (SaveImage3 丢面/只渲染局部);
+    - 视口优先 -> 恒完整; "实体混入/缩放标尺"问题已由 VBS 侧"临时隐藏层"在源头解决,
+      因此视口裁剪恢复为主源, 离屏仅在视口模型不可用时兜底, 且兜底必须过全套校验
+      (分辨率/面积比/断带/割裂)。
+    """
+    src = open(
+        os.path.join(ROOT, "core", "image_processor.py"), encoding="utf-8"
+    ).read()
+    i_vp = src.find("模型取自视口完整画面")
+    i_off = src.find("Error reading model")
+    assert i_vp > 0 and i_off > 0, "缺少模型来源分支"
+    assert i_vp < i_off, "视口裁剪必须优先 (离屏会丢面/只渲染局部)"
+    assert "回退视口图" in src, "离屏异常时必须回退视口"
+    assert "_model_image_usable(model_path, reject_fragments=True)" in src, (
+        "兜底校验缺失"
+    )
+    assert "band_broken" in src, "缺少断带校验"
+
+
+def test_vbs_gui_no_popup(tmp):
+    """回归 (2026-09-17 用户反馈 2): GUI 启动 (MLFXBG_FROM_GUI=1) 时不再弹完成框。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert "MLFXBG_FROM_GUI" in vbs, "未识别 GUI 启动环境变量"
+    assert 'If FromGuiEnv = "1" Then' in vbs, "未按 GUI 标志跳过完成弹窗"
+    assert 'MsgBox OutMsg, 64, "模流分析报告"' in vbs, "手动运行的完成弹窗被误删"
+
+
+def test_vbs_temp_layer_entity_hide(tmp):
+    """决定性修复回归 (2026-09-17): 实体隐藏必须走"临时隐藏层"。
+
+    实机三次反馈的根因: 图层"类型可见性"(B/C/NBC) 对视口截图无效 ——
+    视口只认"图层隐藏"(用户用 CAD/网格分离截图验证过)。因此:
+    - 每类一个临时层 MLFX_TempHide_i, 建层后立即 ShowLayers False;
+    - 隐藏 = 类别谓词整批 AssignToLayer 进临时层;
+    - 还原 = (类别谓词 AND 图层标签谓词) 逐组挪回各自原图层, 残留兜底 + 删临时层。
+    """
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    for key in (
+        "Sub SetupTempHideLayers()",
+        "Sub PlaceCategoryGroup(cat, pVisible)",
+        "Sub RestoreEntityPlacement()",
+    ):
+        assert key in vbs, f"缺少 {key}"
+    assert '"MLFX_TempHide_" & CStr(i)' in vbs, "临时层命名缺失 (须无空格)"
+    assert "LayerManager.ShowLayers layObj, False" in vbs, "临时层未隐藏"
+    assert "LayerManager.AssignToLayer lst, TempHideLayers(cat)" in vbs, (
+        "隐藏未走 AssignToLayer"
+    )
+    assert "CreateBoolAndPredicate(CatPreds(cat), pLbl)" in vbs, (
+        "还原未用 (类别 AND 图层) 谓词"
+    )
+    assert "Call SetupTempHideLayers()" in vbs, "未建立临时层"
+    assert "Call PlaceCategoryGroup(ci, checked(ci))" in vbs, "应用处未按勾选挪动实体"
+    assert "Call RestoreEntityPlacement()" in vbs, "结束未还原实体归属"
+    assert "ReDim CatEntLayers(4095)" in vbs, "实体登记表未分配"
 
 
 def test_vbs_no_hardcoded_material(tmp):
@@ -1001,6 +1199,117 @@ def test_gif_caps(tmp):
         assert im.size[1] == 100, f"高度上限未生效: {im.size}"
 
 
+def _vbs_declared_audit(text):
+    """静态扫描 VBS: 按过程作用域返回 [(行号, 变量名)] 形式的问题清单。
+
+    规则: 语句开头的赋值 (含 Set / For) 与过程签名/局部 Dim/脚本级 Dim 比对;
+    带点号 (对象属性) 与数组下标不误报; 字符串/注释先剥离。
+    """
+    import re as _re
+
+    from probe_api import strip_vbs_noise
+
+    cleaned = strip_vbs_noise(text)
+    lines = cleaned.split("\n")
+
+    # 1) 脚本级 Dim 与过程边界
+    global_names = set()
+    procs = {}  # name -> {"start": i, "params": set(), "locals": set()}
+    proc_of_line = {}
+    current = None
+    decl_re = _re.compile(r"^\s*Dim\s+(.+)$", _re.I)
+    proc_re = _re.compile(
+        r"^\s*(?:Public\s+|Private\s+)?(Sub|Function)\s+(\w+)\s*\(([^)]*)\)", _re.I
+    )
+    end_re = _re.compile(r"^\s*End\s+(Sub|Function)", _re.I)
+
+    for idx, line in enumerate(lines):
+        m = proc_re.match(line)
+        if m:
+            params = set()
+            for p in m.group(3).split(","):
+                p = p.strip()
+                if not p:
+                    continue
+                parts = p.split()
+                name = parts[-1] if parts else ""
+                if name:
+                    params.add(name.lower())
+            current = m.group(2)
+            procs[current] = {"start": idx, "params": params, "locals": set()}
+            continue
+        if end_re.match(line):
+            current = None
+            continue
+        if current is not None:
+            proc_of_line[idx] = current
+        dm = decl_re.match(line)
+        if dm:
+            for item in dm.group(1).split(","):
+                base = _re.split(r"[\s(]", item.strip())[0]
+                if not base:
+                    continue
+                if current is None:
+                    global_names.add(base.lower())
+                else:
+                    procs[current]["locals"].add(base.lower())
+        # 数组元素维度的 ReDim 也视作声明
+        rm = _re.match(r"^\s*ReDim\s+(?:Preserve\s+)?(\w+)", line, _re.I)
+        if rm:
+            if current is None:
+                global_names.add(rm.group(1).lower())
+            else:
+                procs[current]["locals"].add(rm.group(1).lower())
+
+    # 2) 赋值语句检查
+    issues = []
+    assign_re = _re.compile(r"^\s*(?:Set\s+)?([A-Za-z_]\w*)\s*(?:\([^)]*\))?\s*=(?!=)")
+    for_re = _re.compile(r"^\s*For\s+([A-Za-z_]\w*)\s*=", _re.I)
+    for idx, raw_line in enumerate(lines):
+        proc = proc_of_line.get(idx)
+        visible = set(global_names)
+        if proc:
+            visible |= procs[proc]["params"] | procs[proc]["locals"]
+            visible.add(proc.lower())  # VBScript 用"过程名 = 值"返回结果, 合法
+        for statement in raw_line.split(":"):
+            stmt = statement.strip()
+            if (
+                not stmt
+                or stmt.lower().startswith("if ")
+                or stmt.lower().startswith("elseif ")
+            ):
+                continue
+            m = assign_re.match(stmt) or for_re.match(stmt)
+            if not m:
+                continue
+            name = m.group(1).lower()
+            if name in visible:
+                continue
+            issues.append((idx + 1, m.group(1)))
+    return issues
+
+
+def test_vbs_declared_variables(tmp):
+    """VBS 静态检查: Option Explicit 下"用了但没声明"的变量必须为零。
+
+    回归 (2026-09-16 实证): 过程内遗留 `Set layer = Nothing`, 编译能过、
+    运行到该行才报 800A01F4 (变量未定义) —— cscript 编译检查抓不到。
+    """
+    for name in (
+        "AutoReport.vbs",
+        "OrientModel.vbs",
+        "OrientModel_v1.vbs",
+        "MakeCoolingCircuit.vbs",
+        "MakeCoolingCircuit_v1.vbs",
+    ):
+        path = os.path.join(ROOT, name)
+        if not os.path.exists(path):
+            continue
+        text = open(path, "rb").read().decode("gbk", errors="replace")
+        issues = _vbs_declared_audit(text)
+        assert not issues, f"{name} 存在未声明变量: {issues[:8]}"
+
+
 def test_vbs_syntax_compile(tmp):
     """VBS 全文编译门禁 (实机 800A03EA 事故回归)。
 
@@ -1048,6 +1357,7 @@ def test_vbs_syntax_compile(tmp):
             f"VBS L{idx} 字符串区外含 '--' (VBS 引号转义损坏特征, 引号应双写)"
         )
     assert lines[7].strip() == "Option Explicit"
+    assert body.count("\n") == body.count("\r\n"), "存在 LF-only 行 (全文必须统一 CRLF)"
     wrapped = os.path.join(tmp, "syntax_check.vbs")
     with open(wrapped, "wb") as f:
         f.write(("\r\n".join(lines[:8] + ["WScript.Quit 0"] + lines[8:])).encode("gbk"))
@@ -1312,8 +1622,8 @@ def test_default_plot_keys_whitelist(tmp):
     """默认常用项白名单 (round 2): 共 10 项, 不含 warp_x/y/z (默认报告聚焦全部效应)。"""
     import config_gui
 
-    assert len(config_gui.DEFAULT_PLOT_KEYS) == 10, (
-        f"DEFAULT_PLOT_KEYS 应为 10 项: got {len(config_gui.DEFAULT_PLOT_KEYS)}"
+    assert len(config_gui.DEFAULT_PLOT_KEYS) == 13, (
+        f"DEFAULT_PLOT_KEYS 应为 13 项 (2026-09-16 起含 XYZ): got {len(config_gui.DEFAULT_PLOT_KEYS)}"
     )
     for must in (
         "filling_animation",
@@ -1328,9 +1638,9 @@ def test_default_plot_keys_whitelist(tmp):
         "warpage_all",
     ):
         assert must in config_gui.DEFAULT_PLOT_KEYS, f"缺失默认项: {must}"
-    for forbid in ("warpage_x", "warpage_y", "warpage_z"):
-        assert forbid not in config_gui.DEFAULT_PLOT_KEYS, (
-            f"XYZ 分向变形不应在默认白名单: {forbid}"
+    for must_xyz in ("warpage_x", "warpage_y", "warpage_z"):
+        assert must_xyz in config_gui.DEFAULT_PLOT_KEYS, (
+            f"XYZ 变形页应默认勾选 (2026-09-16 定案): {must_xyz}"
         )
 
 
@@ -1372,6 +1682,73 @@ def test_compute_safe_box_fit_aspect(tmp):
     assert (l2, t2, w2, h2) == (437, 0, 125, 500), f"高图适配错误: {(l2, t2, w2, h2)}"
 
     assert pb.compute_safe_box_fit(os.path.join(tmp, "缺.png"), 0, 0, 100, 100) is None
+
+
+def test_xyz_pages_default_and_shared_placeholder(tmp):
+    """XYZ 变形页默认出图 (2026-09-16 定案) + 共享占位图部件回归。
+
+    回归: 模板 14/15 页的占位图共用同一 image part, 直接替换 blob 会互相覆盖
+    (实测: 两页都显示 Y 的图); 修复 = 检测到共享时"插入新图 + 删除旧图"。
+    模板缺失时跳过 (套件本身不依赖模板)。
+    """
+    import io as _io
+
+    from PIL import Image
+    from pptx import Presentation
+    from pptx.enum.shapes import MSO_SHAPE_TYPE
+
+    # ① 配置默认开启 XYZ
+    cfg = json.loads(
+        open(os.path.join(ROOT, "report_config.json"), encoding="utf-8-sig").read()
+    )
+    plots = {p.get("key"): p for p in cfg.get("plots", [])}
+    for key in ("warpage_x", "warpage_y", "warpage_z"):
+        assert plots[key].get("enabled") is True, f"{key} 应默认开启"
+
+    # ② 14~16 保留页限制已取消
+    src = open(os.path.join(ROOT, "core", "pptx_builder.py"), encoding="utf-8").read()
+    assert "if slide_no in [14, 15, 16]:" not in src, "保留页限制残留"
+
+    tpl = os.path.join(ROOT, "templates", "Moldflow报告模板.pptx")
+    if not os.path.exists(tpl):
+        print("[SKIP] 模板缺失, 跳过共享占位图回归")
+        return
+
+    prs = Presentation(tpl)
+    shares = []
+    for idx, slide in enumerate(prs.slides, 1):
+        for shape in slide.shapes:
+            if shape.shape_type == MSO_SHAPE_TYPE.PICTURE and pb._picture_part_shared(
+                shape
+            ):
+                shares.append(idx)
+                break
+    assert shares, "模板中应存在共享占位图部件的页 (14/15), 否则回归失去意义"
+
+    colors = ((210, 20, 20), (20, 170, 20))
+    for order, slide_no in enumerate(shares[:2]):
+        slide = prs.slides[slide_no - 1]
+        img = os.path.join(tmp, f"xyz{order}.png")
+        Image.new("RGB", (900, 600), colors[order]).save(img, "PNG")
+        ok = pb.insert_or_replace_picture(
+            slide, img, *pb.SLIDE_SAFE_BOXES[slide_no][:4], log_tag="[测试]"
+        )
+        assert ok, f"第 {slide_no} 页放图失败"
+    out = os.path.join(tmp, "shared.pptx")
+    prs.save(out)
+
+    check = Presentation(out)
+    for order, slide_no in enumerate(shares[:2]):
+        slide = check.slides[slide_no - 1]
+        pics = [s for s in slide.shapes if s.shape_type == MSO_SHAPE_TYPE.PICTURE]
+        assert len(pics) == 1, f"第 {slide_no} 页应恰有 1 张图, 实际 {len(pics)}"
+        im = Image.open(_io.BytesIO(pics[0].image.blob)).convert("RGB").resize((4, 4))
+        px = list(im.getdata())
+        avg = tuple(round(sum(p[i] for p in px) / len(px)) for i in range(3))
+        expect = colors[order]
+        assert all(abs(avg[i] - expect[i]) < 40 for i in range(3)), (
+            f"第 {slide_no} 页显示的不是自己的图: {avg} vs {expect}"
+        )
 
 
 def test_insert_or_replace_into_blank_slide(tmp):
@@ -1477,8 +1854,9 @@ def test_builder_silent_skips_registered(tmp):
         "# 确定输出路径", 1
     )[0]
     assert "record_missing" in extra_seg, "追加页缺图仍静默跳过 (B-02)"
-    warp_seg = src.split("if slide_no in [14, 15, 16]:", 1)[1].split("continue", 1)[0]
-    assert "record_missing" in warp_seg, "14-16 保留页仍静默跳过 (B-03)"
+    assert "if slide_no in [14, 15, 16]:" not in src, (
+        "14~16 页保留页限制残留 (2026-09-16 定案: XYZ 默认出图)"
+    )
 
 
 def test_cancel_writes_done_marker(tmp):
@@ -1929,69 +2307,506 @@ def test_cover_prefers_complete_vbs_model_over_offscreen_result(tmp):
     assert chosen == os.path.join(data_dir, "solid_model.png")
 
 
-def test_entity_display_config_defaults_off(tmp):
-    """实体显示开关 (2026-09-15 用户需求): 冷流道/热流道/冷却水三项默认不勾选;
-    配置缺字段/类型错一律按"不显示"处理, 绝不臆造成显示。"""
+def test_entity_display_and_capture_config_defaults(tmp):
+    """配置默认 (2026-09-15/17 用户定案):
+
+    - 冷/热/水默认不勾选, 注射位置默认勾选 (脚本不动它);
+    - 缺失/类型错一律按默认值, 绝不臆造;
+    - 截图取景 capture_settings 默认 fit=True / zoom=1.0 / restore_view=True;
+    - GUI 必须把两项都写回配置, 且每页 display 亦落盘。
+    """
     import config_gui
 
     assert set(config_gui.ENTITY_DISPLAY_KEYS) == {
         "show_cold_runner",
         "show_hot_runner",
         "show_cooling_channels",
-    }, "实体显示键名不对"
+        "show_injection",
+    }, "实体显示键集合不正确"
     assert config_gui.get_entity_display({}) == {
         "show_cold_runner": False,
         "show_hot_runner": False,
         "show_cooling_channels": False,
-    }, "缺失配置必须默认全不勾选"
+        "show_injection": True,
+    }, "缺失配置时注射位置应默认显示, 其余不显示"
     assert (
-        config_gui.get_entity_display({"entity_display": None})["show_cooling_channels"]
-        is False
-    ), "类型错必须按不勾选兜底"
+        config_gui.get_entity_display({"entity_display": None})["show_injection"]
+        is True
+    ), "类型错误时注射位置应默认显示"
     got = config_gui.get_entity_display({"entity_display": {"show_hot_runner": True}})
     assert got == {
         "show_cold_runner": False,
         "show_hot_runner": True,
         "show_cooling_channels": False,
-    }, f"部分勾选解析错误: {got}"
-    # GUI 必须把勾选态落盘 (静态断言: collect_config 写 entity_display)
+        "show_injection": True,
+    }, f"部分勾选读取不正确: {got}"
+    # 取景设置默认与钳制
+    assert config_gui.get_capture_settings({}) == {
+        "fit": True,
+        "zoom": 1.0,
+        "restore_view": True,
+    }, "取景默认值不正确"
+    assert (
+        config_gui.get_capture_settings({"capture_settings": {"zoom": "abc"}})["zoom"]
+        == 1.0
+    ), "非法 zoom 应回落 1.0"
+    assert config_gui.get_capture_settings({"capture_settings": {"zoom": 99}})[
+        "zoom"
+    ] == (1.0), "超范围 zoom 应回落 1.0"
+    # GUI 静态断言: 两项写入 + 每页 display 落盘
     src = open(os.path.join(ROOT, "config_gui.py"), encoding="utf-8").read()
-    assert 'self.cfg["entity_display"] = {' in src, "GUI 未落盘实体显示开关"
-    assert "get_entity_display(self.cfg)" in src, "GUI 未按默认值初始化勾选框"
+    assert 'self.cfg["entity_display"] = {' in src, "GUI 未写 entity_display"
+    assert 'self.cfg["capture_settings"] = {' in src, "GUI 未写 capture_settings"
+    assert 'p["display"] = {' in src, "GUI 未把每页 display 落盘"
+    assert "get_entity_display(self.cfg)" in src, "GUI 未按默认值初始化勾选状态"
+
+
+def test_plot_display_fields_align_vbs(tmp):
+    """每页显示字段名 GUI ↔ VBS 必须逐字一致 (跨语言漂移守卫)。"""
+    import config_gui
+
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    fields = [f for f, _ in config_gui.PLOT_DISPLAY_FIELDS]
+    assert fields == ["cold_runner", "hot_runner", "cooling_channels", "injection"]
+    for fld in fields:
+        assert f"pObj.display.{fld}" in vbs, f"VBS 未读取每页字段 {fld}"
+    assert set(config_gui.PLOT_DISPLAY_TO_ENTITY) == set(fields), "字段映射不完整"
+
+
+def test_vbs_capture_framing_normalized(tmp):
+    """截图取景归一 (2026-09-17 需求 3, 静态断言):
+
+    - 每张图截图前一律按配置 Fit (不再只在带旋转时才 Fit) + 可选 Zoom 余量;
+    - 视角/绘图状态跑完还原: 官方书签 CreateBookmark/GoToBookmark + GetActivePlot;
+    - VBScript 不支持 1# 字面量 (实机编译报错), 回归守卫。
+    """
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    for key in (
+        "ConfigObj.capture_settings.fit",
+        "ConfigObj.capture_settings.zoom",
+        "ConfigObj.capture_settings.restore_view",
+    ):
+        assert key in vbs, f"VBS 未读取 {key}"
+    assert "CapFit = True" in vbs and "CapRestoreView = True" in vbs, "取景默认值缺失"
+    assert "If vFit Then Viewer.Fit" in vbs, "截图前未按配置 Fit 归一"
+    assert "Viewer.Zoom vZoom" in vbs, "未按余量缩放 (Zoom)"
+    assert "If vHasRot Then Call Viewer.Rotate(vRot0, vRot1, vRot2)" in vbs, (
+        "旋转应为可选步骤 (绝对角)"
+    )
+    assert "Viewer.CreateBookmark ViewBookmarkName" in vbs, "未记录运行前视角书签"
+    assert "Viewer.GoToBookmark ViewBookmarkName" in vbs, "未还原运行前视角"
+    assert "Viewer.DeleteBookmark ViewBookmarkName" in vbs, "还原后未清理临时书签"
+    assert "Set PrevActivePlot = Viewer.GetActivePlot()" in vbs, (
+        "未记录运行前显示的绘图"
+    )
+    assert "Viewer.ShowPlot PrevActivePlot" in vbs, "未还原运行前显示的绘图"
+    assert "1#" not in vbs, "VBScript 不支持 1# 字面量 (实机报错回归)"
 
 
 def test_vbs_entity_display_switch(tmp):
-    """VBS 侧实体显示开关 (静态断言): 读 entity_display 三项 → 截图前应用 →
-    截图后按快照恢复; 且旧版"图层恢复只置 N/T/TE"的不对称缺陷必须已修。"""
+    """VBS 真实体显示开关 (2026-09-17 需求 1+2 修订):
+
+    - 四类实体: 冷/热流道、冷却水路 (B/C) + 注射位置 (NBC, 节点边界条件实体);
+    - **注射位置类型码是 NBC 而非 N** (官方类型表: NBC=NDBC; 实机: 注射位置 1 个实体);
+    - 应用时机: 必须在 ShowPlot/Regenerate/ShowPlotFrame **之后** —— 绘图自带显示
+      状态会覆盖图层类型可见性 (实机 2026-09-17: 压力页有注射位置标记, V/P 页就没了);
+    - 注射位置勾选 = 强制 NBC 可见、且结尾写回时保持显示; 不勾选 = 绝不改动;
+    - 每张勾选截图独立显示 (plots[i].display.*, 缺省继承全局 entity_display)。
+    """
     vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
     for key in (
         "ConfigObj.entity_display.show_cold_runner",
         "ConfigObj.entity_display.show_hot_runner",
         "ConfigObj.entity_display.show_cooling_channels",
+        "ConfigObj.entity_display.show_injection",
     ):
         assert key in vbs, f"VBS 未读取 {key}"
-    assert "ShowColdRunner = False" in vbs, "冷流道默认必须为不显示"
-    assert "ShowHotRunner = False" in vbs, "热流道默认必须为不显示"
-    assert "ShowCooling = False" in vbs, "冷却水默认必须为不显示"
-    assert "Sub ApplyEntityVisibility" in vbs, "缺少应用开关的子过程"
-    assert "Sub RestoreEntityVisibility" in vbs, "缺少恢复子过程"
+    assert "ShowInjection = True" in vbs, "注射位置默认必须为显示(不动它)"
+    # 四类扫描 + 分类
+    assert "Sub ScanEntityCategories" in vbs, "缺少按属性分类扫描"
+    assert "Sub SnapshotEntityVisibility" in vbs, "缺少实体显示快照"
+    assert "Sub ApplyEntityVisibility2" in vbs, "缺少按页应用子过程"
+    assert "Sub RestoreEntityVisibility2(keepInjVisible)" in vbs, (
+        "恢复子过程缺注射位置参数"
+    )
+    assert "Dim CatTsets(3), CatLayers(3), CatCounts(3)" in vbs, "类别数组必须为 4 类"
+    assert 'Array("注射", "injection")' in vbs, "缺少注射位置关键字"
+    assert "注射位置" in vbs, "缺少注射位置类别名"
+    # 注射位置: 类型 NBC + 只强制显示, 绝不隐藏
+    assert 'tys = Array("NBC")' in vbs, "注射位置快照类型必须是 NBC"
+    assert 'If CatSnapTy(i) = "NBC" Then' in vbs, "应用分支未按 NBC 判断"
+    assert 'If CatSnapTy(i) = "NBC" And CBool(keepInjVisible) Then' in vbs, (
+        "结尾写回时未保留注射位置显示"
+    )
+    i0 = vbs.find("Sub ApplyEntityVisibility2")
+    i1 = vbs.find("End Sub", i0)
+    body = vbs[i0:i1]
+    # 注射位置: 勾选=显示, 未勾选=隐藏 (用户定案 2026-09-17: 该页没勾选就不该出现)
+    assert 'LayerManager.SetTypeVisible CatSnapLayers(i), "NBC", checked(3)' in body, (
+        "注射位置未按该页勾选状态显隐"
+    )
+    # 应用时机: 在 ShowPlot/重绘之后
+    i_show = vbs.find("Viewer.ShowPlot PlotObj")
+    i_apply = vbs.find(
+        "Call ApplyEntityVisibility2(DispHot, DispCold, DispCool, DispInj)"
+    )
+    assert i_show > 0 and i_apply > 0, "缺少 ShowPlot 或按页应用调用"
+    assert i_apply > i_show, "实体显示必须在 ShowPlot 之后应用 (否则被绘图状态覆盖)"
+    # 应用后必须重绘视口, 否则方案 A 视口截图残留旧画面 (2026-09-17 实机取证:
+    # 方案 B 离屏导出干净、方案 A 视口截图仍有流道/水路/标记)
+    apply_pos = vbs.find(
+        "Call ApplyEntityVisibility2(DispHot, DispCold, DispCool, DispInj)"
+    )
+    apply_regenerate = vbs.find("PlotObj.Regenerate", apply_pos)
+    apply_frame = vbs.find('If pType = "gif" Then', apply_pos)
+    assert apply_regenerate > apply_pos, (
+        "应用实体显示后未重绘视口 (方案 A 会残留旧画面)"
+    )
+    assert apply_regenerate < apply_frame, "重绘位置应在取景/截图之前"
     assert (
-        "Call ApplyEntityVisibility(ShowColdRunner, ShowHotRunner, ShowCooling)" in vbs
-    ), "截图阶段未应用实体显示开关"
-    assert "Call RestoreEntityVisibility()" in vbs, "截图后未恢复实体显示"
-    # 对称恢复: 必须先快照原值再按原值回写
+        "Call ApplyEntityVisibility2(ShowHotRunner, ShowColdRunner, ShowCooling)"
+        not in vbs
+    ), "仍在截图前全局应用一次实体显示 (应为每页独立)"
+    assert "Call RestoreEntityVisibility2(ShowInjection)" in vbs, "截图后未恢复实体显示"
+    # 注射位置最终态: 结尾所有还原动作之后再确保一次 + 标签显示 (第三次反馈兜底)
+    assert "Sub EnsureInjectionVisible()" in vbs, "缺少注射位置最终态保护"
+    assert "If ShowInjection Then Call EnsureInjectionVisible()" in vbs, (
+        "结尾未在绘图还原后调用注射位置最终态保护"
+    )
+    assert "Sub CleanupEntityLabels()" in vbs, "缺少标签清理子过程"
+    assert "Call CleanupEntityLabels()" in vbs, "未调用标签清理"
+    assert 'SetTypeShowLabels(CatSnapLayers(i), "NBC", True)' not in vbs, (
+        "不得再开启 NBC 标签 (曾把 N/B/C 标签全开, 用户反馈满屏标注)"
+    )
+    for fld in ("hot_runner", "cold_runner", "cooling_channels", "injection"):
+        assert f"pObj.display.{fld}" in vbs, f"未读取每页 display.{fld}"
+    assert "Sub ApplyEntityVisibility(" not in vbs, "旧的按类型一刀切实现在不并存"
+
+
+def test_vbs_cover_and_mesh_type_separation(tmp):
+    """封面 / Slide 2 网格图按"类型"分离 (2026-09-17 需求 3 修订)。
+
+    官方类型码 (CHM classLayerManager) 取证: S=曲面 F=CAD面 STL=STL包络 BD=CAD实体,
+    T/TE=网格面片, NBC=节点边界条件(NDBC), B/C=梁/曲线, N=节点。
+    旧方案枚举 BD/F/S 实体句柄 —— CAD 实体在 API 里选不中, 只能退化成网格封面;
+    新方案纯按类型分离, 不需要实体句柄:
+      封面 = 只留 CAD 类型 (S/F/STL/BD), 隐藏网格/流道/节点/边界;
+      网格图 = 隐藏 CAD 类型, 其余保持;
+    两趟共用一份图层快照并在末尾统一写回 (界面显示状态不留痕)。
+    """
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert "LayerManager.ShowAllLayers" in vbs, "封面抓图前未统一显示全部图层"
+    assert 'CadTypes = Array("S", "F", "STL", "BD")' in vbs, "CAD 类型清单缺失"
+    assert "Sub SetCadTypesMode(pCoverOnly)" in vbs, "缺少 CAD 类型显隐子过程"
+    assert "Call SetCadTypesMode(True)" in vbs, "封面未按'只留 CAD 类型'抓图"
+    # 网格图只留网格与节点 (T/TE/N), 流道/水路/CAD/边界条件全隐藏 (用户定案 2026-09-17)
+    assert "Sub SetMeshOnlyVisible()" in vbs, "缺少'只留网格+节点'子过程"
+    assert "Call SetMeshOnlyVisible()" in vbs, "网格图未调用'只留网格+节点'"
+    i_mesh_sub = vbs.find("Sub SetMeshOnlyVisible()")
+    i_mesh_sub_end = vbs.find("End Sub", i_mesh_sub)
+    mesh_body = vbs[i_mesh_sub:i_mesh_sub_end]
+    assert 'tyName = "T" Or tyName = "TE" Or tyName = "N"' in mesh_body, (
+        "网格图类型白名单必须是 T/TE/N"
+    )
+    assert "SetTypeVisible layObj, tyName, want" in mesh_body, (
+        "网格图未按白名单设置类型"
+    )
+    assert "SetCadTypesMode(False)" not in vbs, (
+        "旧的'只隐藏 CAD'网格趟应已被'只留 T/TE/N'取代"
+    )
+    assert "Call SetCadTypesMode(True)" in vbs, "封面仍需只留 CAD 类型"
+    assert "Sub RestoreLayerSnapAll()" in vbs, "缺少图层快照写回子过程"
+    assert "Call RestoreLayerSnapAll()" in vbs, "封面/网格两趟后未写回图层显示"
     assert (
-        "VisOrig(visIdx) = CBool(LayerManager.GetTypeVisible(L1, VisTypes(visIdx)))"
+        "LayerSnap(LayerN, visIdx) = CBool(LayerManager.GetTypeVisible(L1, VisTypes(visIdx)))"
         in vbs
-    ), "未快照图层原有可见性"
-    assert "LayerManager.SetTypeVisible L1, VisTypes(visIdx), VisOrig(visIdx)" in vbs, (
-        "未按快照恢复图层可见性"
+    ), "未建立图层类型可见性快照"
+    assert (
+        "LayerManager.SetTypeVisible layObj, VisTypes(tyIdx), CBool(LayerSnap(jj, tyIdx))"
+        in vbs
+    ), "未按快照写回图层显示"
+    assert "只显示 CAD 实体类型" in vbs, "缺少封面(纯 CAD)日志"
+    assert "CAD 类型可见性" in vbs, "缺少封面 CAD 类型诊断日志"
+    assert "只显示网格与节点" in vbs, "缺少网格图(只留 T/TE/N)日志"
+    assert "EnumerateCadSpec(StudyDoc" not in vbs, (
+        "仍在截图链路里枚举选不中的 CAD 实体句柄 (应改为按类型分离)"
     )
-    assert 'For Each I_type In Array("N", "T", "TE")' not in vbs, (
-        "旧版不对称恢复残留 (B/NBC/SBC/LCS 被永久隐藏)"
+
+
+def test_vbs_view_settings_rotation(tmp):
+    """变形图视角配置化 (需求 2): 读 view_settings.rotation/fit;
+    缺配置时仅 warpage_z 回落 (-90,0,0); 截图后必须恢复原视角。"""
+    vbs = open(os.path.join(ROOT, "AutoReport.vbs"), "rb").read().decode("gbk")
+    assert "pObj.view_settings.rotation" in vbs, "未读取 view_settings.rotation"
+    assert "pObj.view_settings.fit" in vbs, "未读取 view_settings.fit"
+    assert "Call Viewer.Rotate(vRot0, vRot1, vRot2)" in vbs, "未按配置旋转视角"
+    assert "If vFit Then Viewer.Fit" in vbs, "未按配置执行 Fit"
+    assert 'If Not vHasRot And pKey = "warpage_z" Then' in vbs, (
+        "缺少 warpage_z 旧行为回落"
     )
-    # 字符串切换仍按官方 EntityType 枚举 (BEAM=B / CURVE=C)
-    assert 'LM.SetTypeVisible LY, "B", want' in vbs, "梁单元切换缺失"
+    assert "vRot0 = -90 : vRot1 = 0 : vRot2 = 0" in vbs, "warpage_z 回落角度错误"
+    assert "Call Viewer.Rotate(orig_rx, orig_ry, orig_rz)" in vbs, "截图后未恢复原视角"
+
+
+def test_config_orient_and_view_defaults(tmp):
+    """report_config.json: 定向宏参数 + X/Y/Z 变形图旋转角默认值齐备且可手动改。"""
+    cfg = json.loads(
+        open(os.path.join(ROOT, "report_config.json"), encoding="utf-8-sig").read()
+    )
+    orient = cfg.get("orient_settings")
+    assert isinstance(orient, dict), "缺少 orient_settings"
+    assert orient.get("target_axis") == "Z", "target_axis 默认应为 Z"
+    assert orient.get("flip_normal") is False, "flip_normal 默认应为 False"
+    want = {"warpage_x": [0, 0, 0], "warpage_y": [0, 0, 0], "warpage_z": [-90, 0, 0]}
+    plots = {p.get("key"): p for p in cfg.get("plots", [])}
+    for key, rotation in want.items():
+        settings = plots.get(key, {}).get("view_settings")
+        assert isinstance(settings, dict), f"{key} 缺 view_settings"
+        assert settings.get("rotation") == rotation, f"{key} 旋转角应为 {rotation}"
+        assert settings.get("fit") is True, f"{key} 应带 fit=true"
+
+
+def test_vbs_orient_model(tmp):
+    """OrientModel.vbs (需求 1, 第四版): 读选择 -> 面心/法线 -> 全选所有实体一次变换
+    (先平移面心->原点, 再绕原点旋转) -> 复核偏差 -> 不自动保存。
+
+    回归点 (2026-09-16 实机取证): 曲线与梁共用节点, "分趟按类型移动"会把共用节点
+    移动两次 -> 模型错乱; 正确做法 = 用谓词取反全选, 一次 Translate + 一次 Rotate。
+    """
+    vbs = open(os.path.join(ROOT, "OrientModel.vbs"), "rb").read().decode("gbk")
+    assert "Option Explicit" in vbs, "缺 Option Explicit"
+    assert "StudyDoc.Selection" in vbs, "未读取当前选择"
+    assert "GetElemNodes" in vbs, "未取单元节点"
+    assert "GetNodeCoord" in vbs, "未取节点坐标"
+    assert "Sel.Size" in vbs, "未校验选择数量"
+    assert "面心" in vbs and "法线" in vbs, "确认弹窗缺面心/法线信息"
+    # 全选: 官方谓词一次只能带一个范围 -> 用"不存在的属性类型"取反得到全部实体
+    assert "Function AllEntities" in vbs, "缺少全选函数"
+    assert "CreatePropTypePredicate(999999)" in vbs, "全选未用空谓词取反技巧"
+    assert "CreateBoolNotPredicate" in vbs, "缺少谓词取反 (NOT)"
+    # 单次变换 (禁止分趟: 曲线与梁共用节点会被移两次)
+    assert "Modeler.Translate(ListAll, VecMove, False, 1, False)" in vbs, "缺一次性平移"
+    assert (
+        "Modeler.Rotate(ListAll, VecOrigin, VecAxis, AngleDeg, False, 1, False)" in vbs
+    ), "缺一次性旋转"
+    assert vbs.index("Modeler.Translate(ListAll") < vbs.index(
+        "Modeler.Rotate(ListAll"
+    ), "必须先把面心平移到原点, 再绕原点旋转"
+    assert "Call VecOrigin.SetXYZ(0, 0, 0)" in vbs, "旋转参考点必须是 0,0,0"
+    assert "TransformTypeX" not in vbs, "分趟变换残留 (共用节点会被双重位移)"
+    assert "Function FallbackMultiPass" in vbs, "缺少全选失败时的兜底路径"
+    # CAD 本体趟 (录制脚本取证: GUI 用 "BD1 BD2 ..." 选 CAD; 只在宏上下文可能可解析)
+    # 与录制脚本对齐: 选择串前后带空格 (" BD1 "), 且每次用新列表
+    assert 'CadProbe.SelectFromString " BD" & cadK & " "' in vbs, (
+        "缺 CAD 本体(BD*)探测趟"
+    )
+    assert 'CadProbe.SelectFromString " " & CadSpec & " "' in vbs, (
+        "CAD 选择串未带空格格式"
+    )
+    assert "CAD 本体探测到" in vbs, "缺 CAD 探测日志"
+    assert "请在 GUI 里手工旋转" in vbs, "缺 CAD 手工旋转参数提示"
+    assert "参考点 (0,0,0)" in vbs, "CAD 手工旋转提示缺参考点"
+    assert "若研究里已有分析结果" in vbs, "缺少结果失效耗时提示"
+    assert "SelectionCenter" in vbs, "缺少变换后复核 (面心应回到原点)"
+    assert "ConfigObj.orient_settings.flip_normal" in vbs, "未读取翻转开关"
+    assert "ConfigObj.orient_settings.target_axis" in vbs, "未读取目标轴"
+    # 用户定案: 不自动保存、不弹保存询问
+    assert "StudyDoc.Save" not in vbs, "宏不得自动保存研究"
+    assert "是否保存" not in vbs and "保存进研究吗" not in vbs, "不得弹保存询问"
+    assert "未自动保存" in vbs, "日志必须说明未自动保存"
+    assert "orient_before.png" in vbs and "orient_after.png" in vbs, "缺少前后对照截图"
+
+
+def test_vbs_orient_syntax_compile(tmp):
+    """OrientModel.vbs 与存档版 OrientModel_v1.vbs 语法编译
+    (与 AutoReport 同手法: cscript 编译到 Quit 前)。"""
+    import subprocess
+    import sys
+
+    if sys.platform != "win32":
+        print("[SKIP] test_vbs_orient_syntax_compile: 非 Windows 无 cscript")
+        return
+    for name in (
+        "OrientModel.vbs",
+        "OrientModel_v1.vbs",
+        "MakeCoolingCircuit.vbs",
+        "MakeCoolingCircuit_v1.vbs",
+    ):
+        body = open(os.path.join(ROOT, name), "rb").read().decode("gbk")
+        lines = body.split("\r\n")
+        assert lines[7].strip() == "Option Explicit", (
+            f"{name} 第 8 行应为 Option Explicit: {lines[7]!r}"
+        )
+        for idx, l in enumerate(lines, 1):
+            assert "\r" not in l, f"{name} L{idx} 含裸 CR"
+        assert body.count("\n") == body.count("\r\n"), f"{name} 存在 LF-only 行"
+        wrapped = os.path.join(tmp, "syntax_" + name)
+        with open(wrapped, "wb") as f:
+            f.write(
+                ("\r\n".join(lines[:8] + ["WScript.Quit 0"] + lines[8:])).encode("gbk")
+            )
+        r = subprocess.run(
+            ["cscript", "//nologo", wrapped], capture_output=True, timeout=60
+        )
+        out = (r.stdout + r.stderr).decode("gbk", errors="replace")
+        assert r.returncode == 0, f"{name} 编译失败: {out[:300]}"
+
+
+PROBE_CLASS_HTML = """<html><body>
+<div class="title">Demo Class Reference</div>
+<div class="contents">
+<p>Demo brief text.
+ <a href="classDemo.html#details">More...</a></p>
+<table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 class="groupheader"><a name="pub-methods"></a>
+Public Member Functions</h2></td></tr>
+<tr class="memitem:aaa"><td class="memItemLeft" align="right" valign="top">String&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classDemo.html#aaa">GetThing</a> (long aIndex, Boolean aFlag)</td></tr>
+<tr class="memdesc:aaa"><td class="mdescLeft">&#160;</td><td class="mdescRight">Fetch a thing. <br /></td></tr>
+<tr class="memitem:bbb"><td class="memItemLeft" align="right" valign="top">void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classDemo.html#bbb">Reset</a> ()</td></tr>
+<tr class="heading"><td colspan="2"><h2 class="groupheader"><a name="pub-attribs"></a>
+Public Attributes</h2></td></tr>
+<tr class="memitem:ccc"><td class="memItemLeft" align="right" valign="top">Object&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classDemo.html#ccc">Worker</a></td></tr>
+<tr class="memdesc:ccc"><td class="mdescLeft">&#160;</td><td class="mdescRight">Worker object. <br /></td></tr>
+</table>
+</div></body></html>"""
+
+PROBE_MEMBERS_HTML = """<html><body><table><tr><td class="entry"><a class="el" href="classDemo.html#aaa">GetThing</a></td>
+<td class="entry"><a class="el" href="classDemo.html#ccc">Worker</a></td></tr></table></body></html>"""
+
+
+def test_probe_parse_class_html(tmp):
+    """探针解析器: Doxygen 类页 -> 类名/简述/方法签名/属性/成员表。"""
+    import probe_api as pa
+
+    info = pa.parse_class_html(PROBE_CLASS_HTML, fallback_name="Fallback")
+    assert info["name"] == "Demo", f"类名解析错: {info['name']}"
+    assert info["brief"] == "Demo brief text.", f"简述解析错: {info['brief']!r}"
+    method_names = [m["name"] for m in info["methods"]]
+    assert method_names == ["GetThing", "Reset"], f"方法清单错: {method_names}"
+    first = info["methods"][0]
+    assert first["returns"] == "String", first
+    assert first["params"] == [
+        {"type": "long", "name": "aIndex"},
+        {"type": "Boolean", "name": "aFlag"},
+    ], first
+    assert first["brief"] == "Fetch a thing.", first
+    assert info["methods"][1]["params"] == [], "无参方法应解析为空参数表"
+    assert [a["name"] for a in info["attributes"]] == ["Worker"], info["attributes"]
+    assert info["attributes"][0]["type"] == "Object", info["attributes"]
+    assert info["attributes"][0]["brief"] == "Worker object.", info["attributes"]
+    assert pa.parse_all_members(PROBE_MEMBERS_HTML) == ["GetThing", "Worker"]
+
+
+def test_probe_strip_vbs_noise(tmp):
+    """探针扫描器: 字符串/注释里的伪成员不得被统计。"""
+    import probe_api as pa
+
+    source = (
+        'Set Synergy = CreateObject("Synergy.Synergy")\n'
+        "' Synergy.Quit True  <- 注释不算\n"
+        "Set Viewer = Synergy.Viewer()\n"
+        'Viewer.SaveImage3 "a.b.png", 1920, 1080\n'
+    )
+    cleaned = pa.strip_vbs_noise(source)
+    assert '"' not in cleaned, "字符串字面量未被剥离"
+    assert "Quit" not in cleaned, "注释未被剥离"
+    assert "1920" in cleaned, "参数数值应保留"
+    usages = pa.extract_vbs_usages(source)
+    assert "Viewer" in usages["Synergy"]["calls"], usages
+    seen = usages["Viewer"]["calls"] + usages["Viewer"]["reads"]
+    assert "SaveImage3" in seen, usages
+    assert "Synergy" not in usages.get("Synergy", {}).get("calls", []), (
+        f"字符串里的 Synergy.Synergy 被误统计: {usages}"
+    )
+
+
+def test_probe_invoke_safety(tmp):
+    """实机 --invoke 只能调只读成员: 回归 2026-09-16 Viewer.Print 弹窗事故。
+
+    事故: 零参 void 成员被批量调用, Viewer.Print 弹出"保存 PDF"对话框,
+    Moldflow 模态阻塞, 探针与用户操作全部卡住。
+    """
+    import probe_api as pa
+
+    cls = {
+        "name": "Demo",
+        "methods": [
+            {"name": "Print", "returns": "", "params": [], "brief": ""},
+            {"name": "Regenerate", "returns": "", "params": [], "brief": ""},
+            {"name": "PlayAnimation", "returns": "", "params": [], "brief": ""},
+            {"name": "GetUnits", "returns": "String", "params": [], "brief": ""},
+            {"name": "GetFirst", "returns": "Object", "params": [], "brief": ""},
+            {
+                "name": "GetNext",
+                "returns": "Object",
+                "params": [{"type": "Object", "name": "aEnt"}],
+                "brief": "",
+            },
+            {
+                "name": "SetUnits",
+                "returns": "Boolean",
+                "params": [{"type": "String", "name": "aUnit"}],
+                "brief": "",
+            },
+        ],
+        "attributes": [{"name": "Project", "type": "Object", "brief": ""}],
+    }
+    safe = {m["name"] for m in cls["methods"] if pa.is_invokable_read(cls, m["name"])}
+    assert safe == {"GetUnits", "GetFirst"}, f"白名单语义错: {safe}"
+    assert pa.is_invokable_read(cls, "Project"), "只读属性应允许"
+    for blocked in ("Print", "Regenerate", "PlayAnimation", "GetNext", "SetUnits"):
+        assert not pa.is_invokable_read(cls, blocked), f"{blocked} 不应被调用"
+    assert pa.is_invokable_read(None, "GetUnits") is False, "未知类不得放行"
+    assert pa.is_blocked("Print"), "Print 必须在黑名单兜底里"
+
+
+def test_probe_audit_flags_unknown_member(tmp):
+    """探针对照: 用到但目录查无此名 -> 疑点; 官方未用成员 -> 机会清单。"""
+    import probe_api as pa
+
+    # 变量名须落在探针的 VBS_OBJECT_MAP 内 (与仓库 VBS 真实变量一致)
+    catalog = {
+        "classes": [
+            {
+                "name": "StudyDoc",
+                "brief": "",
+                "methods": [
+                    {"name": "GetThing", "returns": "String", "params": [], "brief": ""}
+                ],
+                "attributes": [{"name": "Worker", "type": "Object", "brief": ""}],
+                "all_members": ["GetThing", "Worker"],
+            }
+        ]
+    }
+    sources = {"fake.vbs": "StudyDoc.GetThing()\nStudyDoc.Ghost()\nStudyDoc.Worker\n"}
+    audit = pa.build_audit(catalog, sources)
+    assert audit["unknown_members"].get("Ghost"), audit["unknown_members"]
+    entry = audit["classes"]["StudyDoc"]
+    assert entry["undocumented"] == ["Ghost"], entry
+    assert entry["unused"] == [], f"官方成员均已被用: {entry['unused']}"
+
+
+def test_probe_real_vbs_usages(tmp):
+    """探针扫描器跑真实 AutoReport.vbs: 关键调用必须识别, 且无字符串噪声。"""
+    import probe_api as pa
+
+    vbs_path = os.path.join(ROOT, "AutoReport.vbs")
+    source = open(vbs_path, "rb").read().decode("gbk", errors="replace")
+    usages = pa.extract_vbs_usages(source)
+    for cls, member in (
+        ("Synergy", "StudyDoc"),
+        ("Synergy", "PlotManager"),
+        ("Viewer", "SaveImage3"),
+        ("PlotMgr", "GetFirstPlot"),
+        ("Plot", "SetNumberOfAnimationFrames"),
+        ("PropertyEditor", "GetFirstProperty"),
+    ):
+        bucket = usages.get(cls, {})
+        seen = bucket.get("calls", []) + bucket.get("reads", [])
+        assert member in seen, f"{cls}.{member} 未识别"
+    assert "Synergy" not in usages["Synergy"]["calls"], (
+        'CreateObject("Synergy.Synergy") 字符串污染未清除'
+    )
 
 
 def main():

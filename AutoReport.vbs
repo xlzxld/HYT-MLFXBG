@@ -10,7 +10,15 @@ Option Explicit
 Dim FSO, WshShell, ScriptDir, BaseDir, TempDir, ConfigPath, ModeADir, ModeBDir, ScreenshotMode
 Dim ConfigJsonStr, HTML, ConfigObj
 Dim ImageWidth, ImageHeight, KeepView, NFrames, DelayMs
-Dim SynergyGetter, Synergy, StudyDoc, PlotManager, Viewer, DiagnosisManager
+Dim SynergyGetter, Synergy, StudyDoc, PlotManager, Viewer, DiagnosisManager, PredicateManager
+Dim CatTsets(3), CatLayers(3), CatCounts(3)
+Dim CatSnapLayers(), CatVisSnap(), CatSnapN
+Dim CatSnapKey(), CatSnapTy(), CatSnapCats()
+Dim CatEntLists(3), CatEntLayers(), CatEntBase(4), CatEntTotal
+Dim CatPreds(3), TempHideLayers(3)
+Dim ShowInjection, CapFit, CapZoom, CapRestoreView, ViewBookmarkName, PrevActivePlot
+Dim DispHot, DispCold, DispCool, DispInj, vZoom
+' 实体显示分类用数组必须在主流程之前声明 (VBScript 的 Dim x(N) 执行到该行才分配)
 Dim StudyName, MeshTypeRaw, DetectedMeshType
 Dim MeshSummary, MeshText
 Dim MatID, MatSubID, MatPlot
@@ -127,18 +135,55 @@ Dim ShowColdRunner, ShowHotRunner, ShowCooling
 ShowColdRunner = False
 ShowHotRunner = False
 ShowCooling = False
+' 注射位置 (TsetID 40000): 默认 True = 保持显示 (用户定案 2026-09-17:
+' 跑完脚本不能让注射位置图标消失; 只有勾选了才强制显示, 不勾选绝不动它)。
+ShowInjection = True
 On Error Resume Next
 ShowColdRunner = CBool(ConfigObj.entity_display.show_cold_runner)
 ShowHotRunner = CBool(ConfigObj.entity_display.show_hot_runner)
 ShowCooling = CBool(ConfigObj.entity_display.show_cooling_channels)
 If Err.Number <> 0 Then
-    Call LogMsg("WARN: 配置 entity_display 缺字段或类型错, 冷流道/热流道/冷却水按默认(不显示)处理")
+    Call LogMsg("WARN: entity_display 缺字段或类型错, 冷/热流道/冷却水路按默认(不显示)处理")
     Err.Clear
 End If
 On Error GoTo 0
-Call LogMsg("实体显示开关: 冷流道=" & CStr(ShowColdRunner) & ", 热流道=" & CStr(ShowHotRunner) & ", 冷却水=" & CStr(ShowCooling) & " (False=截图不显示)")
+On Error Resume Next
+ShowInjection = CBool(ConfigObj.entity_display.show_injection)
+If Err.Number <> 0 Then
+    Err.Clear
+    ShowInjection = True
+End If
+On Error GoTo 0
+Call LogMsg("实体显示开关: 冷流道=" & CStr(ShowColdRunner) & ", 热流道=" & CStr(ShowHotRunner) & ", 冷却水=" & CStr(ShowCooling) & ", 注射位置=" & CStr(ShowInjection) & " (FALSE=不显示; 注射位置 FALSE=不动它)")
 
-Call LogMsg("画质参数: Width=" & ImageWidth & ", Height=" & ImageHeight & ", NFrames=" & NFrames)
+' 截图取景归一 (2026-09-17 用户需求): 用户缩放/平移不影响截图内容。
+' 官方 API 取证: Viewer.Fit = 模型填满窗口; Viewer.Zoom(系数) = 按系数缩放
+' (例 0.9 = 再缩小 10% 留边距); CreateBookmark/GoToBookmark = 视角存取;
+' Rotate(x,y,z) = 绝对角度 (RotateBy 才是相对), 故还原时直接写回原角度。
+CapFit = True
+CapZoom = 1.0
+CapRestoreView = True
+On Error Resume Next
+CapFit = CBool(ConfigObj.capture_settings.fit)
+If Err.Number <> 0 Then
+    Err.Clear
+    CapFit = True
+End If
+CapZoom = CDbl(ConfigObj.capture_settings.zoom)
+If Err.Number <> 0 Then
+    Err.Clear
+    CapZoom = 1.0
+End If
+CapRestoreView = CBool(ConfigObj.capture_settings.restore_view)
+If Err.Number <> 0 Then
+    Err.Clear
+    CapRestoreView = True
+End If
+On Error GoTo 0
+If CapZoom <= 0 Then CapZoom = 1.0
+Call LogMsg("截图取景: fit=" & CStr(CapFit) & ", zoom=" & CStr(CapZoom) & ", 跑完还原视角=" & CStr(CapRestoreView))
+
+Call LogMsg("图像参数: Width=" & ImageWidth & ", Height=" & ImageHeight & ", NFrames=" & NFrames)
 
 ' 4K (3840x2160) 已禁用: SaveImage3 离屏导出在 4K 下实机定案大面积断带 (AI_GUIDE.md 坑册)。
 ' 旧配置/手改配置在此钳到 1080P, 与 config_gui.collect_config 的钳制双保险。
@@ -258,6 +303,7 @@ End If
 Set PlotManager = Synergy.PlotManager()
 Set Viewer = Synergy.Viewer()
 Set DiagnosisManager = Synergy.DiagnosisManager()
+Set PredicateManager = Synergy.PredicateManager()
 
 StudyName = StudyDoc.StudyName
 MeshTypeRaw = UCase(CStr(StudyDoc.MeshType))
@@ -362,6 +408,27 @@ End If
 
 ' 预清理视口 (导出纯模型图前隐藏所有结果图)
     ' 确保视口只显示原始模型
+    ' 视角/绘图状态保护 (2026-09-17): 跑完还原用户界面, 不留痕。
+    ViewBookmarkName = "AutoReport_ViewRestore"
+    If CapRestoreView Then
+        On Error Resume Next
+        Viewer.DeleteBookmark ViewBookmarkName
+        If Err.Number <> 0 Then Err.Clear
+        Viewer.CreateBookmark ViewBookmarkName
+        If Err.Number <> 0 Then
+            Err.Clear
+            CapRestoreView = False
+            Call LogMsg("WARN: 视角书签创建失败, 本次不还原视角")
+        Else
+            Call LogMsg("已记录当前视角 (跑完自动还原)")
+        End If
+        On Error GoTo 0
+    End If
+    Set PrevActivePlot = Nothing
+    On Error Resume Next
+    Set PrevActivePlot = Viewer.GetActivePlot()
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
     Dim pActive
     Set pActive = PlotManager.GetFirstPlot()
     While Not pActive Is Nothing
@@ -373,100 +440,127 @@ End If
     ' run.log), 且视口截图样式随图层勾选漂移 (灰色 CAD 样式被用户否决)。
     ' 封面改由 Python 侧模型本体图直出 (core/image_processor.resolve_cover_image),
     ' 本节导出的 solid_model.png 仅作 Slide 2 网格页与封面最后兜底。
-    Dim LayerManager, L1, I_type, TypeToHide, TypeToShow
+    ' 4.1 封面模型图: 只显示 CAD 图层, 其他图层全隐藏 (需求 3, 2026-09-16 定案)
+    '   - CAD 实体: 谓词支持 S/STL; BD/F 不被谓词支持, 用 SelectFromString 逐号枚举
+    '   - 研究里没有 CAD 实体 (Fusion/STL 网格) -> 退回"只显示模型本体 T/TE"
+    '   - 逐层快照全部类型可见性, 截完按快照恢复 (修复旧版只快照第一层的问题)
+    ' 4.1 封面 / Slide 2 网格图 (2026-09-17 需求 3 修订): 按"类型"分离 CAD 与网格。
+    ' 官方类型码 (CHM classLayerManager): N=节点 B=梁 T=三角 TE=四面体 C=曲线
+    '   S=曲面 F=CAD面 STL=STL包络 BD=CAD实体 R=区域
+    '   NBC=节点边界条件(NDBC) SBC=面/单元边界条件 LCS=局部坐标系。
+    ' 旧写法靠枚举 BD/F 实体句柄找 CAD —— API 选不中 CAD 实体, 只能退化成网格封面;
+    ' 现改为纯类型分离, 不需要实体句柄:
+    '   第一趟 封面: 只留 CAD 类型 (S/F/STL/BD) + 隐藏网格/流道/节点/边界 -> solid_model.png
+    '   第二趟 网格图: 隐藏 CAD 类型, 其余保持 -> mesh_model.png (Slide 2 专用)
+    ' 研究没有 CAD 实体时封面接近空白 -> Python resolve_cover_image 自动回退视口裁剪。
+    ' 两趟共用一份图层快照, 末尾统一写回 (用户界面显示状态不留痕)。
+    Dim LayerManager, L1, I_type
+    Dim VisTypes, visIdx, layIdx, LayerN, LayerNames(), LayerSnap()
+    Dim CadTypes
     Set LayerManager = Synergy.LayerManager()
+    CadTypes = Array("S", "F", "STL", "BD")
+    ' 标签清理 (2026-09-17): 必须放在 LayerManager 之后调用 —— 之前放在脚本最前,
+    ' LayerManager 还是空变量, If LayerManager Is Nothing 直接报 800A01A8 (缺少对象)。
+    Call CleanupEntityLabels()
     If Not LayerManager Is Nothing Then
-            ' 实机取证 (2026-09-08): Fusion/中性面方案的模型本体就是三角形单元 (T),
-        ' 无条件隐藏 T 会导出全白空图, 仅 3D 实体方案才隐藏 T/TE。
-        If InStr(MeshTypeRaw, "3D") > 0 Or InStr(MeshTypeRaw, "TET") > 0 Then
-            TypeToHide = Array("N", "B", "T", "NBC", "SBC", "LCS", "TE")
-        Else
-            TypeToHide = Array("N", "B", "NBC", "SBC", "LCS")
-        End If
-        ' 图层可见性快照 (2026-09-15): 本段对 TypeToHide/TypeToShow 两张表都写了值,
-        ' 旧版"恢复"只把 N/T/TE 置 True —— B/NBC/SBC/LCS 被永久留在隐藏态,
-        ' C/S/R/STL/BD 被永久留在显示态, 污染后续全部结果截图
-        ' (冷流道/冷却水梁单元在结果图里静默消失, 即该缺陷的实发后果)。
-        ' 改为先快照原值, 收尾时按原值恢复。
-        Dim VisTypes, VisOrig(), visIdx
-        VisTypes = Array("N", "B", "T", "TE", "NBC", "SBC", "LCS", "C", "S", "R", "STL", "BD")
-        ReDim VisOrig(UBound(VisTypes))
-        For visIdx = 0 To UBound(VisTypes)
-            VisOrig(visIdx) = True
-        Next
+        VisTypes = Array("N", "B", "T", "TE", "C", "S", "R", "F", "STL", "BD", "NBC", "SBC", "LCS")
         On Error Resume Next
-        Set L1 = LayerManager.GetFirst()
-        If Not L1 Is Nothing Then
-            For visIdx = 0 To UBound(VisTypes)
-                VisOrig(visIdx) = CBool(LayerManager.GetTypeVisible(L1, VisTypes(visIdx)))
-            Next
-        End If
+        LayerManager.ShowAllLayers
         If Err.Number <> 0 Then
-            Call LogMsg("WARN: 读取图层原有可见性失败, 恢复时按默认(可见)处理")
+            Call LogMsg("WARN: ShowAllLayers 异常: " & Err.Description)
             Err.Clear
         End If
         On Error GoTo 0
-        TypeToShow = Array("C", "S", "R", "STL", "BD")
-        Set L1 = LayerManager.GetFirst()
-        While Not L1 Is Nothing
-            For Each I_type In TypeToHide
-                LayerManager.SetTypeVisible L1, I_type, False
-            Next
-            For Each I_type In TypeToShow
-                LayerManager.SetTypeVisible L1, I_type, True
-            Next
-            Set L1 = LayerManager.GetNext(L1)
-        Wend
+        ' ---- 图层快照 (上限 512; ReDim Preserve 只能扩最后一维) ----
+        LayerN = 0
+        ReDim LayerNames(511)
+        ReDim LayerSnap(511, UBound(VisTypes))
         On Error Resume Next
-        Viewer.Fit ' 模型全景入框 (此导出点无结果图与数据条, Fit 安全; 修复封面局部放大裁切)
+        Set L1 = LayerManager.GetFirst()
+        Do While Not L1 Is Nothing
+            If LayerN > 511 Then
+                Call LogMsg("WARN: 图层数超 512, 快照截断, 界面恢复可能不完整")
+                Exit Do
+            End If
+            Set LayerNames(LayerN) = L1
+            For visIdx = 0 To UBound(VisTypes)
+                LayerSnap(LayerN, visIdx) = CBool(LayerManager.GetTypeVisible(L1, VisTypes(visIdx)))
+            Next
+            LayerN = LayerN + 1
+            Set L1 = LayerManager.GetNext(L1)
+        Loop
+        If Err.Number <> 0 Then
+            Call LogMsg("WARN: 图层遍历异常: " & Err.Description)
+            Err.Clear
+        End If
+        On Error GoTo 0
+        ' ---- 第一趟: 封面 = 只留 CAD 类型 ----
+        Call LogMsg("封面: 只显示 CAD 实体类型 (S/F/STL/BD), 隐藏网格/流道/节点/边界条件")
+        Call SetCadTypesMode(True)
+        On Error Resume Next
+        Viewer.Fit
+        If Err.Number <> 0 Then Err.Clear
         On Error GoTo 0
         Call SleepSec(1)
-        ' SaveImage3 是实机最易抛错的 API 之一(4K 断带取证): 裸调用失败会
-        ' 800A 中断整个脚本, 后续网格图/材料曲线/Python 构建全部不执行
         On Error Resume Next
         Viewer.SaveImage3 TempDir & "\solid_model.png", ImageWidth, ImageHeight, True, False, False, False, False, False, False, False, False
         If Err.Number <> 0 Then
             Err.Clear
-            Call LogMsg("WARN: solid_model SaveImage3 异常, 封面模型图本次缺失")
+            Call LogMsg("WARN: solid_model SaveImage3 异常, 封面图可能缺失")
         End If
         On Error GoTo 0
         If FSO.FileExists(TempDir & "\solid_model.png") Then
             FSO.CopyFile TempDir & "\solid_model.png", ModeADir & "\solid_model.png", True
             FSO.CopyFile TempDir & "\solid_model.png", ModeBDir & "\solid_model.png", True
-            Call LogMsg("纯 CAD 实体模型截图已导出: solid_model.png")
+            Call LogMsg("封面(纯 CAD 实体)截图已导出: solid_model.png")
         End If
-        ' 恢复网格显示供 Slide 2 网格质量页使用 (按快照原值回写, 不再只置 N/T/TE)
+        ' ---- 第二趟: Slide 2 网格模型图 = 隐藏 CAD 类型 ----
+        ' 只留网格与节点 (T/TE/N): 用户定案 2026-09-17「只要 CAD 模型
+        ' 生成的网格和节点」; 流道/水路(梁 B/曲线 C)、CAD 面(S/F/STL/BD)、
+        ' 边界条件标记(NBC/SBC)、区域/坐标系 全部隐藏。
+        Call LogMsg("网格模型图: 只显示网格与节点 (T/TE/N), 隐藏流道/水路/CAD/边界条件")
+        Call SetMeshOnlyVisible()
         On Error Resume Next
-        Set L1 = LayerManager.GetFirst()
-        While Not L1 Is Nothing
-            For visIdx = 0 To UBound(VisTypes)
-                LayerManager.SetTypeVisible L1, VisTypes(visIdx), VisOrig(visIdx)
-            Next
-            Set L1 = LayerManager.GetNext(L1)
-        Wend
+        Viewer.Fit
+        If Err.Number <> 0 Then Err.Clear
+        On Error GoTo 0
+        Call SleepSec(1)
+        On Error Resume Next
+        Viewer.SaveImage3 TempDir & "\mesh_model.png", ImageWidth, ImageHeight, True, False, False, False, False, False, False, False, False
         If Err.Number <> 0 Then
-            Call LogMsg("WARN: 图层可见性恢复异常: " & Err.Description)
             Err.Clear
+            Call LogMsg("WARN: mesh_model SaveImage3 异常, 网格图可能缺失")
         End If
         On Error GoTo 0
+        If FSO.FileExists(TempDir & "\mesh_model.png") Then
+            FSO.CopyFile TempDir & "\mesh_model.png", ModeADir & "\mesh_model.png", True
+            FSO.CopyFile TempDir & "\mesh_model.png", ModeBDir & "\mesh_model.png", True
+        End If
+        Call LogMsg("网格模型图已导出: mesh_model.png")
+        ' ---- 统一写回图层快照 (封面/网格两趟的所有类型改动) ----
+        Call RestoreLayerSnapAll()
     End If
 
-    On Error Resume Next
-    Viewer.Fit
-    On Error GoTo 0
-    Call SleepSec(1)
-    On Error Resume Next
-    Viewer.SaveImage3 TempDir & "\mesh_model.png", ImageWidth, ImageHeight, True, False, False, False, False, False, False, False, False
-    If Err.Number <> 0 Then
-        Err.Clear
-        Call LogMsg("WARN: mesh_model SaveImage3 异常, 网格模型图本次缺失")
+    ' 兜底: LayerManager 不可用时仍要出网格图 (无 CAD 屏蔽能力, 与旧行为一致)
+    If Not FSO.FileExists(TempDir & "\mesh_model.png") Then
+        On Error Resume Next
+        Viewer.Fit
+        If Err.Number <> 0 Then Err.Clear
+        On Error GoTo 0
+        Call SleepSec(1)
+        On Error Resume Next
+        Viewer.SaveImage3 TempDir & "\mesh_model.png", ImageWidth, ImageHeight, True, False, False, False, False, False, False, False, False
+        If Err.Number <> 0 Then
+            Err.Clear
+            Call LogMsg("WARN: mesh_model SaveImage3 异常, 网格图可能缺失")
+        End If
+        On Error GoTo 0
+        If FSO.FileExists(TempDir & "\mesh_model.png") Then
+            FSO.CopyFile TempDir & "\mesh_model.png", ModeADir & "\mesh_model.png", True
+            FSO.CopyFile TempDir & "\mesh_model.png", ModeBDir & "\mesh_model.png", True
+        End If
+        Call LogMsg("网格模型图已导出 (兜底路径): mesh_model.png")
     End If
-    On Error GoTo 0
-    If FSO.FileExists(TempDir & "\mesh_model.png") Then
-        FSO.CopyFile TempDir & "\mesh_model.png", ModeADir & "\mesh_model.png", True
-        FSO.CopyFile TempDir & "\mesh_model.png", ModeBDir & "\mesh_model.png", True
-    End If
-    Call LogMsg("网格模型图已导出: mesh_model.png")
 
 ' 5. 材料属性提取 (Slide 3: 基本信息/推荐工艺/粘度/PVT) — 取"本方案实际使用材料"
 ' 实机取证 (2026-09-08, study 097_1): GetFirstProperty(21000) 返回属性表第一项
@@ -563,7 +657,9 @@ If Not Prop Is Nothing Then
     Do While FieldIdRaw > 0 And FieldGuard < 500
         FieldGuard = FieldGuard + 1
         FieldDesc = ""
-        FieldDesc = CStr(Prop.GetFieldDescription(FieldIdRaw))
+        ' 2026-09-16 实机取证: 官方属性名是带参属性 FieldDescription(字段ID) (返回值本身),
+        ' 且不存在 GetFieldDescription 方法 —— 旧写法异常被 On Error 吞掉, 导致 desc 恒为空。
+        FieldDesc = CStr(Prop.FieldDescription(FieldIdRaw))
         ValStr = ""
         Set FieldValsRaw = Prop.FieldValues(FieldIdRaw)
         If Not FieldValsRaw Is Nothing Then
@@ -631,7 +727,8 @@ Else
     Call LogMsg("WARN: 未找到当前方案材料属性, 跳过粘度/PVT 曲线导出")
 End If
 ' 6.0 实体显示: 冷流道/热流道/冷却水 (默认不显示) —— 影响其后全部结果截图
-Call ApplyEntityVisibility(ShowColdRunner, ShowHotRunner, ShowCooling)
+Call ScanEntityCategories()
+Call SnapshotEntityVisibility()
 
 ' 6. 循环提取每个结果项的图
 Set PlotsArray = ConfigObj.plots
@@ -652,6 +749,43 @@ For i = 0 To PlotsArray.length - 1
     If pEnabled Then
         Set PlotObj = FindPlotRobust(PlotManager, pName)
         If Not PlotObj Is Nothing Then
+            ' ---- 本页实体显示 (2026-09-17 需求 2): 缺省继承全局 entity_display ----
+            Dim bTmp
+            DispHot = ShowHotRunner : DispCold = ShowColdRunner
+            DispCool = ShowCooling : DispInj = ShowInjection
+            bTmp = False
+            On Error Resume Next
+            bTmp = CBool(pObj.display.hot_runner)
+            If Err.Number <> 0 Then
+                Err.Clear
+                bTmp = ShowHotRunner
+            End If
+            DispHot = bTmp
+            On Error GoTo 0
+            On Error Resume Next
+            bTmp = CBool(pObj.display.cold_runner)
+            If Err.Number <> 0 Then
+                Err.Clear
+                bTmp = ShowColdRunner
+            End If
+            DispCold = bTmp
+            On Error GoTo 0
+            On Error Resume Next
+            bTmp = CBool(pObj.display.cooling_channels)
+            If Err.Number <> 0 Then
+                Err.Clear
+                bTmp = ShowCooling
+            End If
+            DispCool = bTmp
+            On Error GoTo 0
+            On Error Resume Next
+            bTmp = CBool(pObj.display.injection)
+            If Err.Number <> 0 Then
+                Err.Clear
+                bTmp = ShowInjection
+            End If
+            DispInj = bTmp
+            On Error GoTo 0
             Viewer.ShowPlot PlotObj
                 ' 强制重绘: 实机取证 SaveImage/SavePlotScaleImage 存在陈旧帧 (ShowPlot 后视口未重绘,
                 ' 抓到上一张图的画面, 数据条串台) — 与 GIF 导出路径的 Regenerate 同源
@@ -676,22 +810,70 @@ For i = 0 To PlotsArray.length - 1
                 End If
                 On Error GoTo 0
                 Call SleepSec(1)
-
-            Dim hasCustomRot, orig_rx, orig_ry, orig_rz
-            hasCustomRot = False
-            If pKey = "warpage_z" Then
-                hasCustomRot = True
+                ' 实体显示必须在 ShowPlot/Regenerate/ShowPlotFrame 之后应用:
+                ' 绘图自带显示状态会覆盖图层类型可见性 (2026-09-17 实机取证:
+                ' 压力页有注射位置标记, 下一张 V/P 页就没了)。
+                Call ApplyEntityVisibility2(DispHot, DispCold, DispCool, DispInj)
+                ' 应用后必须重绘视口 (2026-09-17 实机取证): 只改图层可见性时
+                ' 离屏导出(SaveImage3)已是新状态, 而视口截图(SaveImage)还是旧画面 ——
+                ' 方案 A 的图里因此残留流道/水路/标记。Regenerate 触发重绘即可对齐。
                 On Error Resume Next
-                orig_rx = Viewer.GetRotationX
-                orig_ry = Viewer.GetRotationY
-                orig_rz = Viewer.GetRotationZ
-                Call Viewer.Rotate(-90, 0, 0)
-                Viewer.Fit
-                Call LogMsg("[视角调整] warpage_z 已自动旋转为垂直状态 (-90, 0, 0)")
+                PlotObj.Regenerate
+                If Err.Number <> 0 Then Err.Clear
                 On Error GoTo 0
+                Call SleepSec(1)
+
+            ' 视角配置 (需求 2, 2026-09-16): 每个结果项可带 view_settings.rotation
+            '   = [rx, ry, rz] (绝对角度, 度) 与 view_settings.fit; 缺配置时回落
+            '   历史行为: 仅 warpage_z 旋转为 (-90, 0, 0)。坐标可在 report_config.json
+            '   里手动调整, 当前值为默认值。
+            ' ---- 取景归一 (2026-09-17 需求 3) ----
+            ' 无论用户当前怎么缩放/平移: 先按配置旋转(绝对角), 再 Fit 归一取景,
+            ' 需要时 Zoom(系数) 留边距 -> 截图内容与用户缩放彻底解耦。
+            Dim hasCustomRot, orig_rx, orig_ry, orig_rz
+            Dim vRot0, vRot1, vRot2, vFit, vHasRot
+            hasCustomRot = False
+            orig_rx = 0 : orig_ry = 0 : orig_rz = 0
+            vRot0 = 0 : vRot1 = 0 : vRot2 = 0
+            vFit = CapFit
+            vZoom = CapZoom
+            vHasRot = False
+            On Error Resume Next
+            vRot0 = CDbl(HTML.parentWindow.getArrayItem(pObj.view_settings.rotation, 0))
+            vRot1 = CDbl(HTML.parentWindow.getArrayItem(pObj.view_settings.rotation, 1))
+            vRot2 = CDbl(HTML.parentWindow.getArrayItem(pObj.view_settings.rotation, 2))
+            If Err.Number = 0 Then vHasRot = True
+            Err.Clear
+            vFit = CBool(pObj.view_settings.fit)
+            If Err.Number <> 0 Then
+                Err.Clear
+                vFit = CapFit
             End If
-            
-            ' 切勿调用 Viewer.Fit()! 100% 会导致模型与左侧色带标尺挤压重叠!
+            vZoom = CDbl(pObj.view_settings.zoom)
+            If Err.Number <> 0 Then
+                Err.Clear
+                vZoom = CapZoom
+            End If
+            On Error GoTo 0
+            If Not vHasRot And pKey = "warpage_z" Then
+                vRot0 = -90 : vRot1 = 0 : vRot2 = 0
+                vHasRot = True
+            End If
+            If vZoom <= 0 Then vZoom = 1.0
+            On Error Resume Next
+            orig_rx = Viewer.GetRotationX
+            orig_ry = Viewer.GetRotationY
+            orig_rz = Viewer.GetRotationZ
+            If vHasRot Then Call Viewer.Rotate(vRot0, vRot1, vRot2)
+            If vFit Then Viewer.Fit
+            If Abs(vZoom - 1.0) > 0.0001 Then Viewer.Zoom vZoom
+            If Err.Number <> 0 Then
+                Call LogMsg("WARN: 取景归一异常 (" & pKey & "): " & Err.Description)
+                Err.Clear
+            End If
+            On Error GoTo 0
+            hasCustomRot = True
+            Call LogMsg("[取景归一] " & pKey & " -> 旋转(" & vRot0 & ", " & vRot1 & ", " & vRot2 & "), fit=" & CStr(vFit) & ", zoom=" & vZoom)
 
             If pType = "gif" Then
                 ' 充填动画导出 (帧数由配置指定)
@@ -767,8 +949,14 @@ For i = 0 To PlotsArray.length - 1
                 End If
 
                 ' 根目录副本: mode_a 同名文件写失败时的兜底源; 加错误保护防整脚本中断 (C-06)
+                ' 2026-09-17 提速: mode_a 已写成时直接拷贝同一张图 (内容一致),
+                ' 省掉一次离屏渲染 (~0.5~1 秒/页); 只有 mode_a 缺失时才重新截图。
                 On Error Resume Next
-                Viewer.SaveImage TempDir & "\" & pKey & ".png"
+                If FSO.FileExists(ModeADir & "\" & pKey & ".png") Then
+                    FSO.CopyFile ModeADir & "\" & pKey & ".png", TempDir & "\" & pKey & ".png", True
+                Else
+                    Viewer.SaveImage TempDir & "\" & pKey & ".png"
+                End If
                 If Err.Number <> 0 Then
                     Call LogMsg("WARN: 根目录副本截图异常: " & Err.Description)
                     Err.Clear
@@ -781,7 +969,6 @@ For i = 0 To PlotsArray.length - 1
             If hasCustomRot Then
                 On Error Resume Next
                 Call Viewer.Rotate(orig_rx, orig_ry, orig_rz)
-                Viewer.Fit
                 Call LogMsg("[视角恢复] 已恢复原有视角")
                 On Error GoTo 0
             End If
@@ -848,7 +1035,39 @@ End If
 Next
 
 ' 6.8 恢复实体显示原状 (不改变用户手工设定的图层状态)
-Call RestoreEntityVisibility()
+Call RestoreEntityVisibility2(ShowInjection)
+Call RestoreEntityPlacement()
+
+' 视图/绘图状态还原 (2026-09-17): 视图书签回放, 绘图显示恢复原状。
+On Error Resume Next
+If CapRestoreView Then
+    Viewer.GoToBookmark ViewBookmarkName
+    Viewer.DeleteBookmark ViewBookmarkName
+    If Err.Number <> 0 Then
+        Call LogMsg("WARN: 视角还原失败: " & Err.Description)
+        Err.Clear
+    Else
+        Call LogMsg("已还原运行前的视角")
+    End If
+End If
+Dim pAll
+Set pAll = PlotManager.GetFirstPlot()
+Do While Not pAll Is Nothing
+    Viewer.HidePlot pAll
+    Set pAll = PlotManager.GetNextPlot(pAll)
+Loop
+If Not PrevActivePlot Is Nothing Then
+    Viewer.ShowPlot PrevActivePlot
+    Call LogMsg("已还原运行前显示的绘图")
+End If
+If Err.Number <> 0 Then
+    Call LogMsg("WARN: 绘图显示状态还原异常: " & Err.Description)
+    Err.Clear
+End If
+On Error GoTo 0
+' 注射位置最终态 (用户反馈 2026-09-17 第三次): 绘图/视角还原可能再次
+' 覆盖显示状态, 所以在所有还原动作之后再确保一次。
+If ShowInjection Then Call EnsureInjectionVisible()
 Call LogMsg("共提取结果图 " & ExportCount & " 张")
 
 ' 6.9 XY 探针峰值数据导出 (GetMaxValue 值 + 曲线 txt; null-on-error, 绝不写 0 充数)
@@ -904,7 +1123,15 @@ If ret = 0 Then
              "网格类型: " & DetectedMeshType & vbCrLf & _
              "报告路径: " & vbCrLf & LastOutPath & vbCrLf & vbCrLf & _
              "即将为您打开 PowerPoint 预览"
+    ' GUI 启动时不弹完成框 (2026-09-17 用户反馈: 只留一个弹窗; GUI 自己会
+' 弹出带日志的完成框)。手动双击运行 (无该环境变量) 仍保留弹窗。
+Dim FromGuiEnv
+FromGuiEnv = WshShell.ExpandEnvironmentStrings("%MLFXBG_FROM_GUI%")
+If FromGuiEnv = "1" Then
+    Call LogMsg("运行来源: 配置界面 (完成框由界面弹出, 脚本不再弹窗)")
+Else
     MsgBox OutMsg, 64, "模流分析报告"
+End If
 Else
     Call LogMsg("ERROR: PPT 生成失败: " & ret)
 MsgBox "PPT 生成失败。" & vbCrLf & _
@@ -927,70 +1154,566 @@ End If
 ' 截图里就不出现它们。
 ' 应用前先快照原有可见性, 恢复时按原值写回, 不改变用户手工设定的图层状态。
 ' ==============================================================================
-Dim VisSnapshotB, VisSnapshotC, VisSnapshotOK
-VisSnapshotB = True
-VisSnapshotC = True
-VisSnapshotOK = False
+' ==============================================================================
+' 实体显示 (按属性分类控制; 2026-09-16 重构)
+'
+' 背景: 冷流道/热流道/冷却水路都是梁(B)/曲线(C), 靠类型无法区分。
+' 实测: 可用属性类型区分 (本机取证: 热流道 40430/热浇口 40434/热主浇道 40442,
+'       冷却液入口 40020/管道 40480; 冷流道属性在有冷流道的研究里同样可被识别),
+'       且不同类别的实体通常落在不同图层 -> 按"类别所在图层"逐层设置 B/C 可见性,
+'       **不移动任何实体**。若两类共用同一图层, 只能"任一勾选即一起显示"(日志告警)。
+' ==============================================================================
 
-Sub ApplyEntityVisibility(showCold, showHot, showCool)
-    Dim LM, LY, want, firstHit
-    want = CBool(showCold) Or CBool(showHot) Or CBool(showCool)
+Sub ScanEntityCategories()
+    Dim pe, ts, prop, nm, cat, i
+    Set pe = Nothing
     On Error Resume Next
-    Set LM = Synergy.LayerManager()
-    If Err.Number <> 0 Or LM Is Nothing Then
-        Call LogMsg("WARN: LayerManager 不可用, 冷流道/热流道/冷却水显示开关本次未生效")
-        Err.Clear
-        On Error GoTo 0
-        Exit Sub
-    End If
-    firstHit = True
-    Set LY = LM.GetFirst()
-    While Not LY Is Nothing
-        If firstHit Then
-            VisSnapshotB = CBool(LM.GetTypeVisible(LY, "B"))
-            VisSnapshotC = CBool(LM.GetTypeVisible(LY, "C"))
-            VisSnapshotOK = True
-            firstHit = False
-        End If
-        LM.SetTypeVisible LY, "B", want
-        LM.SetTypeVisible LY, "C", want
-        Set LY = LM.GetNext(LY)
-    Wend
-    If Err.Number <> 0 Then
-        Call LogMsg("WARN: 设置实体类型可见性异常: " & Err.Description)
-        VisSnapshotOK = False
-        Err.Clear
-    End If
-    On Error GoTo 0
-    Call LogMsg("实体显示已应用: 梁单元(冷流道/热流道/冷却水)可见=" & CStr(want))
-End Sub
-
-Sub RestoreEntityVisibility()
-    Dim LM, LY, bVal, cVal
-    If VisSnapshotOK Then
-        bVal = VisSnapshotB
-        cVal = VisSnapshotC
-    Else
-        ' 快照失败: 按 Moldflow 默认(可见)恢复, 不留隐藏残留
-        bVal = True
-        cVal = True
-    End If
-    On Error Resume Next
-    Set LM = Synergy.LayerManager()
-    If Err.Number <> 0 Or LM Is Nothing Then
-        Err.Clear
-        On Error GoTo 0
-        Exit Sub
-    End If
-    Set LY = LM.GetFirst()
-    While Not LY Is Nothing
-        LM.SetTypeVisible LY, "B", bVal
-        LM.SetTypeVisible LY, "C", cVal
-        Set LY = LM.GetNext(LY)
-    Wend
+    Set pe = Synergy.PropertyEditor()
     If Err.Number <> 0 Then Err.Clear
     On Error GoTo 0
-    Call LogMsg("实体显示已恢复原状 (B=" & CStr(bVal) & ", C=" & CStr(cVal) & ")")
+    For i = 0 To 3
+        CatTsets(i) = ""
+        CatLayers(i) = ""
+        CatCounts(i) = 0
+    Next
+    CatEntTotal = 0
+    ReDim CatEntLayers(4095)
+    If pe Is Nothing Then
+        Call LogMsg("WARN: PropertyEditor 不可用, 跳过实体分类 (按类别显示将不可用)")
+        Exit Sub
+    End If
+    For ts = 40000 To 40999
+        Set prop = Nothing
+        On Error Resume Next
+        Set prop = pe.GetFirstProperty(ts)
+        If Err.Number <> 0 Then Err.Clear
+        On Error GoTo 0
+        If Not prop Is Nothing Then
+            nm = ""
+            On Error Resume Next
+            nm = CStr(prop.Name)
+            If Err.Number <> 0 Then Err.Clear
+            On Error GoTo 0
+            cat = ClassifyPropertyName(nm)
+            If cat >= 0 Then
+                If Len(CatTsets(cat)) > 0 Then CatTsets(cat) = CatTsets(cat) & " "
+                CatTsets(cat) = CatTsets(cat) & CStr(ts)
+                Call LogMsg("实体分类: TsetID=" & ts & " [" & nm & "] -> " & CatNameOf(cat))
+            End If
+        End If
+    Next
+    For i = 0 To 3
+        Call CollectCategoryLayers(i)
+    Next
+End Sub
+
+Function ClassifyPropertyName(nm)
+    Dim low
+    low = LCase(CStr(nm))
+    If HasAnyWord(low, Array("热流道", "热浇口", "热主浇道", "hot runner", "hot gate", "hot sprue")) Then
+        ClassifyPropertyName = 0
+        Exit Function
+    End If
+    If HasAnyWord(low, Array("冷流道", "冷浇口", "冷主浇道", "cold runner", "cold gate", "cold sprue")) Then
+        ClassifyPropertyName = 1
+        Exit Function
+    End If
+    If HasAnyWord(low, Array("管道", "冷却", "隔水板", "喷流", "软管", "pipe", "cooling", "circuit", "baffle", "bubbler", "hose")) Then
+        ClassifyPropertyName = 2
+        Exit Function
+    End If
+    If HasAnyWord(low, Array("注射", "injection")) Then
+        ClassifyPropertyName = 3
+        Exit Function
+    End If
+    ClassifyPropertyName = -1
+End Function
+
+Function HasAnyWord(low, words)
+    Dim i
+    HasAnyWord = False
+    For i = 0 To UBound(words)
+        If InStr(low, words(i)) > 0 Then
+            HasAnyWord = True
+            Exit Function
+        End If
+    Next
+End Function
+
+Function CatNameOf(i)
+    If i = 0 Then
+        CatNameOf = "热流道"
+    ElseIf i = 1 Then
+        CatNameOf = "冷流道"
+    ElseIf i = 2 Then
+        CatNameOf = "冷却水路"
+    Else
+        CatNameOf = "注射位置"
+    End If
+End Function
+
+Sub CollectCategoryLayers(cat)
+    Dim parts, i, pred, p2, pOr, lst, size, ent, layer, lname, names
+    If Len(CatTsets(cat)) = 0 Then Exit Sub
+    parts = Split(CatTsets(cat), " ")
+    Set pred = Nothing
+    For i = 0 To UBound(parts)
+        Set p2 = Nothing
+        On Error Resume Next
+        Set p2 = PredicateManager.CreatePropTypePredicate(CLng(parts(i)))
+        If Err.Number <> 0 Then Err.Clear
+        On Error GoTo 0
+        If Not p2 Is Nothing Then
+            If pred Is Nothing Then
+                Set pred = p2
+            Else
+                Set pOr = Nothing
+                On Error Resume Next
+                Set pOr = PredicateManager.CreateBoolOrPredicate(pred, p2)
+                If Err.Number <> 0 Then Err.Clear
+                On Error GoTo 0
+                If Not pOr Is Nothing Then Set pred = pOr
+            End If
+        End If
+    Next
+    If pred Is Nothing Then Exit Sub
+    Set lst = Nothing
+    Set layer = Nothing
+    On Error Resume Next
+    Set lst = StudyDoc.CreateEntityList()
+    lst.SelectFromPredicate pred
+    size = CLng(lst.Size)
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+    CatCounts(cat) = size
+    ' 保存实体表 + 类别谓词 (供"临时隐藏层"挪动与还原)
+    On Error Resume Next
+    Set CatEntLists(cat) = lst
+    Set CatPreds(cat) = pred
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+    If size > 2000 Then
+        Call LogMsg("WARN: " & CatNameOf(cat) & " 实体数 " & size & " 超 2000, 临时挪动只登记前 2000 个")
+        size = 2000
+    End If
+    CatEntBase(cat) = CatEntTotal
+    names = ""
+    For i = 0 To size - 1
+        If i >= 2000 Then Exit For
+        Set ent = Nothing
+        Set layer = Nothing
+        lname = ""
+        On Error Resume Next
+        Set ent = lst.Entity(i)
+        If Not ent Is Nothing Then Set layer = StudyDoc.GetEntityLayer(ent)
+        If Not layer Is Nothing Then lname = CStr(LayerManager.GetName(layer))
+        If CatEntTotal <= UBound(CatEntLayers) Then
+            Set CatEntLayers(CatEntTotal) = layer
+            CatEntTotal = CatEntTotal + 1
+        End If
+        If Err.Number <> 0 Then Err.Clear
+        On Error GoTo 0
+        If Len(lname) > 0 Then
+            If InStr("|" & names & "|", "|" & lname & "|") = 0 Then
+                If Len(names) > 0 Then names = names & "|"
+                names = names & lname
+            End If
+        End If
+    Next
+    CatLayers(cat) = names
+    Call LogMsg("实体分类统计: " & CatNameOf(cat) & " = " & size & " 个, 图层: [" & names & "]")
+End Sub
+
+Sub SetupTempHideLayers()
+    ' 每个类别一个临时层 (名字固定; 已存在则复用), 建立后立即隐藏。
+    ' 名字只用字母/数字/下划线, 避免图层标签谓词在含空格层名上失效。
+    Dim i, nm, layObj
+    If LayerManager Is Nothing Then Exit Sub
+    For i = 0 To 3
+        Set TempHideLayers(i) = Nothing
+        nm = "MLFX_TempHide_" & CStr(i)
+        Set layObj = Nothing
+        On Error Resume Next
+        Set layObj = LayerManager.FindLayerByName(nm)
+        If Err.Number <> 0 Then Err.Clear
+        On Error GoTo 0
+        If layObj Is Nothing Then
+            On Error Resume Next
+            Set layObj = LayerManager.CreateLayerByName(nm)
+            If Err.Number <> 0 Then Err.Clear
+            On Error GoTo 0
+        End If
+        On Error Resume Next
+        If Not layObj Is Nothing Then LayerManager.ShowLayers layObj, False
+        If Err.Number <> 0 Then Err.Clear
+        On Error GoTo 0
+        Set TempHideLayers(i) = layObj
+    Next
+End Sub
+
+Sub PlaceCategoryGroup(cat, pVisible)
+    ' pVisible=False: 该类实体整批挪进临时隐藏层 (视口截图才看不到)
+    ' pVisible=True : 按 (类别谓词 AND 图层标签谓词) 逐组挪回各自原图层
+    Dim lst, parts, k, lname, lyr, pLbl, pAnd, ok
+    If LayerManager Is Nothing Then Exit Sub
+    If cat < 0 Or cat > 3 Then Exit Sub
+    If TempHideLayers(cat) Is Nothing Then Exit Sub
+    If CatPreds(cat) Is Nothing Then Exit Sub
+    ok = False
+    On Error Resume Next
+    Set lst = StudyDoc.CreateEntityList()
+    If pVisible Then
+        If Len(CatLayers(cat)) > 0 Then
+            parts = Split(CatLayers(cat), "|")
+            For k = 0 To UBound(parts)
+                lname = parts(k)
+                Set lyr = LayerManager.FindLayerByName(lname)
+                Set pLbl = PredicateManager.CreateLabelPredicate("L" & lname)
+                Set pAnd = Nothing
+                If Not pLbl Is Nothing Then
+                    Set pAnd = PredicateManager.CreateBoolAndPredicate(CatPreds(cat), pLbl)
+                End If
+                If (Not lyr Is Nothing) And (Not pAnd Is Nothing) Then
+                    lst.SelectFromPredicate pAnd
+                    LayerManager.AssignToLayer lst, lyr
+                End If
+            Next
+        End If
+        ok = True
+    Else
+        lst.SelectFromPredicate CatPreds(cat)
+        LayerManager.AssignToLayer lst, TempHideLayers(cat)
+        LayerManager.ShowLayers TempHideLayers(cat), False
+        ok = True
+    End If
+    If Err.Number <> 0 Then
+        Call LogMsg("WARN: 实体挪动异常 (类 " & CatNameOf(cat) & ", 显示=" & CStr(pVisible) & "): " & Err.Description)
+        Err.Clear
+        ok = False
+    End If
+    On Error GoTo 0
+    If ok Then
+        If pVisible Then
+            Call LogMsg("实体放置: " & CatNameOf(cat) & " -> 原图层")
+        Else
+            Call LogMsg("实体放置: " & CatNameOf(cat) & " -> 临时隐藏层")
+        End If
+    End If
+End Sub
+
+Sub RestoreEntityPlacement()
+    ' 全部类别挪回原图层; 残留实体兜底挪回该类第一个原图层; 最后删除临时层。
+    Dim i, layObj, lstTmp, leftCnt, parts2, firstLyr, nmTmp
+    If LayerManager Is Nothing Then Exit Sub
+    For i = 0 To 3
+        Call PlaceCategoryGroup(i, True)
+    Next
+    For i = 0 To 3
+        Set layObj = TempHideLayers(i)
+        If Not layObj Is Nothing Then
+            leftCnt = 0
+            On Error Resume Next
+            Set lstTmp = StudyDoc.CreateEntityList()
+            nmTmp = CStr(LayerManager.GetName(layObj))
+            lstTmp.SelectFromString "L" & nmTmp
+            leftCnt = CLng(lstTmp.Size)
+            If Err.Number <> 0 Then
+                Err.Clear
+                leftCnt = 0
+            End If
+            On Error GoTo 0
+            If leftCnt > 0 Then
+                parts2 = Split(CatLayers(i), "|")
+                Set firstLyr = Nothing
+                On Error Resume Next
+                If UBound(parts2) >= 0 Then Set firstLyr = LayerManager.FindLayerByName(parts2(0))
+                If Err.Number <> 0 Then Err.Clear
+                On Error GoTo 0
+                If Not firstLyr Is Nothing Then
+                    On Error Resume Next
+                    LayerManager.AssignToLayer lstTmp, firstLyr
+                    If Err.Number <> 0 Then
+                        Call LogMsg("WARN: 兜底挪回失败 (类 " & CatNameOf(i) & "): " & Err.Description)
+                        Err.Clear
+                    Else
+                        Call LogMsg("WARN: 类 " & CatNameOf(i) & " 有 " & leftCnt & " 个实体未按原层还原, 已兜底挪回 [" & parts2(0) & "]")
+                    End If
+                    On Error GoTo 0
+                Else
+                    Call LogMsg("WARN: 类 " & CatNameOf(i) & " 有 " & leftCnt & " 个实体滞留临时层 [" & nmTmp & "], 请手工挪回")
+                End If
+            End If
+        End If
+    Next
+    On Error Resume Next
+    For i = 0 To 3
+        Set layObj = TempHideLayers(i)
+        If Not layObj Is Nothing Then LayerManager.DeleteLayer layObj, True
+        If Err.Number <> 0 Then Err.Clear
+    Next
+    On Error GoTo 0
+    Call LogMsg("实体归属已还原 (含兜底检查), 临时隐藏层已清理")
+End Sub
+
+Sub SnapshotEntityVisibility()
+    ' 4 类实体所在图层的可见性快照 (只做一次; 之后每页只改这份快照里的条目):
+    '   0/1/2 类 = 梁(B)+曲线(C); 3 类(注射位置) = 节点边界条件 NBC。
+    '   同图层同类型被多类共用时, 归一成一个条目并记录所属类别清单(逗号分隔)。
+    Dim catIdx, j, t, tys, lname, layerObj, key, i, found
+    If LayerManager Is Nothing Then
+        Call LogMsg("WARN: LayerManager 不可用, 跳过实体显示控制")
+        Exit Sub
+    End If
+    CatSnapN = 0
+    ReDim CatSnapKey(63)
+    ReDim CatSnapTy(63)
+    ReDim CatSnapCats(63)
+    ReDim CatSnapLayers(63)
+    ReDim CatVisSnap(63)
+    For catIdx = 0 To 3
+        If Len(CatLayers(catIdx)) > 0 Then
+            If catIdx = 3 Then
+                tys = Array("NBC")
+            Else
+                tys = Array("B", "C")
+            End If
+            For Each lname In Split(CatLayers(catIdx), "|")
+                For t = 0 To UBound(tys)
+                    key = lname & vbTab & tys(t)
+                    found = -1
+                    For i = 0 To CatSnapN - 1
+                        If CatSnapKey(i) = key Then found = i
+                    Next
+                    If found < 0 Then
+                        Set layerObj = Nothing
+                        On Error Resume Next
+                        Set layerObj = LayerManager.FindLayerByName(lname)
+                        If Err.Number <> 0 Then Err.Clear
+                        On Error GoTo 0
+                        If Not layerObj Is Nothing Then
+                            If CatSnapN > UBound(CatSnapKey) Then
+                                ReDim Preserve CatSnapKey(CatSnapN * 2)
+                                ReDim Preserve CatSnapTy(CatSnapN * 2)
+                                ReDim Preserve CatSnapCats(CatSnapN * 2)
+                                ReDim Preserve CatSnapLayers(CatSnapN * 2)
+                                ReDim Preserve CatVisSnap(CatSnapN * 2)
+                            End If
+                            CatSnapKey(CatSnapN) = key
+                            CatSnapTy(CatSnapN) = tys(t)
+                            CatSnapCats(CatSnapN) = CStr(catIdx)
+                            Set CatSnapLayers(CatSnapN) = layerObj
+                            On Error Resume Next
+                            CatVisSnap(CatSnapN) = CBool(LayerManager.GetTypeVisible(layerObj, tys(t)))
+                            If Err.Number <> 0 Then Err.Clear
+                            On Error GoTo 0
+                            CatSnapN = CatSnapN + 1
+                        End If
+                    Else
+                        CatSnapCats(found) = CatSnapCats(found) & "," & CStr(catIdx)
+                    End If
+                Next
+            Next
+        End If
+    Next
+    Call LogMsg("实体显示快照: " & CatSnapN & " 个(图层,类型)条目")
+    Call SetupTempHideLayers()
+End Sub
+
+Sub ApplyEntityVisibility2(showHot, showCold, showCool, showInj)
+    ' 应用本页的实体显示:
+    '   冷/热流道/冷却水路 -> 该(图层,类型)任一所属类别勾选 = 显示, 否则隐藏;
+    '   注射位置 -> 勾选 = 强制显示 NBC; 不勾选 = 保持原样(绝不隐藏, 用户定案)。
+    Dim checked(3), i, catsArr, k, want
+    checked(0) = CBool(showHot)
+    checked(1) = CBool(showCold)
+    checked(2) = CBool(showCool)
+    checked(3) = CBool(showInj)
+    If CatSnapN = 0 Then Exit Sub
+    On Error Resume Next
+    For i = 0 To CatSnapN - 1
+        If CatSnapTy(i) = "NBC" Then
+            ' 用户定案 2026-09-17: 该页勾选 -> 显示; 未勾选 -> 隐藏 (与冷/热/水一致)
+            LayerManager.SetTypeVisible CatSnapLayers(i), "NBC", checked(3)
+        Else
+            want = False
+            catsArr = Split(CatSnapCats(i), ",")
+            For k = 0 To UBound(catsArr)
+                If checked(CLng(catsArr(k))) Then want = True
+            Next
+            LayerManager.SetTypeVisible CatSnapLayers(i), CatSnapTy(i), want
+        End If
+    Next
+    If Err.Number <> 0 Then
+        Call LogMsg("WARN: 实体显示应用异常: " & Err.Description)
+        Err.Clear
+    End If
+    On Error GoTo 0
+    ' 真隐藏 (2026-09-17 决定性修复): 类型可见性对视口截图无效 ——
+    ' 把不该显示的实体整批挪进隐藏的临时层 (用户实机验证: 视口认图层隐藏),
+    ' 截图结束由 RestoreEntityPlacement 按原图层还原。
+    Dim ci
+    For ci = 0 To 3
+        Call PlaceCategoryGroup(ci, checked(ci))
+    Next
+    Call LogMsg("实体显示应用: 冷流道=" & CStr(checked(1)) & ", 热流道=" & CStr(checked(0)) & ", 冷却水路=" & CStr(checked(2)) & ", 注射位置=" & CStr(checked(3)) & " (条目 " & CatSnapN & ")")
+End Sub
+
+Sub RestoreEntityVisibility2(keepInjVisible)
+    Dim i
+    If CatSnapN = 0 Then Exit Sub
+    On Error Resume Next
+    For i = 0 To CatSnapN - 1
+        If CatSnapTy(i) = "NBC" And CBool(keepInjVisible) Then
+            ' 本次运行勾选了显示注射位置 -> 保持显示 (不回写旧状态),
+            ' 保证跑完脚本后界面上的注射位置图标仍在 (用户定案 2026-09-17)
+        Else
+            LayerManager.SetTypeVisible CatSnapLayers(i), CatSnapTy(i), CatVisSnap(i)
+        End If
+    Next
+    If Err.Number <> 0 Then
+        Call LogMsg("WARN: 实体显示恢复异常: " & Err.Description)
+        Err.Clear
+    End If
+    On Error GoTo 0
+    Call LogMsg("实体显示已按快照恢复 (条目 " & CatSnapN & ")")
+End Sub
+
+Sub SetMeshOnlyVisible()
+    ' 只留网格与节点: T=三角 TE=四面体 N=节点 (用户定案 2026-09-17:
+    ' "第二页只要 CAD 模型生成的网格和节点")。
+    ' 其余全部隐藏: 梁 B(流道/水路)、曲线 C、CAD 面 S/F/STL/BD、区域 R、
+    ' 节点边界条件 NBC(注射位置标记)、面/单元边界条件 SBC、局部坐标系 LCS。
+    Dim jj, tyIdx, layObj, tyName, want
+    If LayerManager Is Nothing Then Exit Sub
+    On Error Resume Next
+    For jj = 0 To LayerN - 1
+        Set layObj = LayerNames(jj)
+        If Not layObj Is Nothing Then
+            For tyIdx = 0 To UBound(VisTypes)
+                tyName = VisTypes(tyIdx)
+                want = (tyName = "T" Or tyName = "TE" Or tyName = "N")
+                LayerManager.SetTypeVisible layObj, tyName, want
+            Next
+        End If
+    Next
+    If Err.Number <> 0 Then
+        Call LogMsg("WARN: 网格图类型显隐异常: " & Err.Description)
+        Err.Clear
+    End If
+    On Error GoTo 0
+End Sub
+
+Sub SetCadTypesMode(pCoverOnly)
+    ' pCoverOnly=True : 封面模式 —— 只留 CAD 类型 (S/F/STL/BD), 其余全部隐藏
+    ' pCoverOnly=False: 网格模式 —— 只隐藏 CAD 类型, 其余保持不动
+    Dim jj, tyIdx, I_type2, layObj
+    If LayerManager Is Nothing Then Exit Sub
+    On Error Resume Next
+    For jj = 0 To LayerN - 1
+        Set layObj = LayerNames(jj)
+        If Not layObj Is Nothing Then
+            If pCoverOnly Then
+                For tyIdx = 0 To UBound(VisTypes)
+                    LayerManager.SetTypeVisible layObj, VisTypes(tyIdx), False
+                Next
+                For Each I_type2 In CadTypes
+                    LayerManager.SetTypeVisible layObj, I_type2, True
+                Next
+                ' 诊断: 记录该层 CAD 类型是否可见 (封面类型猜错时一看日志就知道)
+                Call LogMsg("封面图层 [" & CStr(LayerManager.GetName(layObj)) & "] CAD 类型可见性: " & _
+                    "S=" & CStr(LayerManager.GetTypeVisible(layObj, "S")) & _
+                    " F=" & CStr(LayerManager.GetTypeVisible(layObj, "F")) & _
+                    " STL=" & CStr(LayerManager.GetTypeVisible(layObj, "STL")) & _
+                    " BD=" & CStr(LayerManager.GetTypeVisible(layObj, "BD")))
+            Else
+                For Each I_type2 In CadTypes
+                    LayerManager.SetTypeVisible layObj, I_type2, False
+                Next
+            End If
+        End If
+    Next
+    If Err.Number <> 0 Then
+        Call LogMsg("WARN: CAD 类型显隐异常: " & Err.Description)
+        Err.Clear
+    End If
+    On Error GoTo 0
+End Sub
+
+Sub CleanupEntityLabels()
+    ' 关掉 N/B/C/NBC 四类标签显示 (把历史误开的标签清干净), 并写日志。
+    ' 说明: 标签状态没有 getter (API 只有 setter), 无法快照还原, 按 Moldflow 默认(关)处理。
+    Dim layObj, tyIdx, tys, okCnt
+    ' IsEmpty 守卫: 变量尚未赋值时 Is Nothing 会抛 800A01A8 (实机事故 2026-09-17)
+    If IsEmpty(LayerManager) Then Exit Sub
+    If LayerManager Is Nothing Then Exit Sub
+    tys = Array("N", "B", "C", "NBC")
+    okCnt = 0
+    On Error Resume Next
+    Set layObj = LayerManager.GetFirst()
+    Do While Not layObj Is Nothing
+        For tyIdx = 0 To UBound(tys)
+            LayerManager.SetTypeShowLabels layObj, tys(tyIdx), False
+            If Err.Number <> 0 Then
+                Err.Clear
+            Else
+                okCnt = okCnt + 1
+            End If
+        Next
+        Set layObj = LayerManager.GetNext(layObj)
+    Loop
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+    Call LogMsg("标签清理: 已对 " & okCnt & " 个(图层,类型)关闭标签显示 (N/B/C/NBC)")
+End Sub
+
+Sub EnsureInjectionVisible()
+    ' 注射位置 (NDBC -> 类型码 NBC) 最终态保护 (2026-09-17 用户第三次反馈后兜底):
+    ' 勾选了"显示"时, 在视角/绘图还原之后再确保一次 —— 只开类型可见, 不动标签:
+    ' 并把复核结果写进日志 (下次不用问用户, 日志即可判定成败)。
+    Dim i, okVis, layName
+    If CatSnapN = 0 Then
+        Call LogMsg("注射位置最终态: 无快照条目 (跳过)")
+        Exit Sub
+    End If
+    On Error Resume Next
+    For i = 0 To CatSnapN - 1
+        If CatSnapTy(i) = "NBC" Then
+            okVis = False
+            layName = ""
+            layName = CStr(LayerManager.GetName(CatSnapLayers(i)))
+            okVis = CBool(LayerManager.SetTypeVisible(CatSnapLayers(i), "NBC", True))
+            If Err.Number <> 0 Then
+                Err.Clear
+                okVis = False
+            End If
+            Call LogMsg("注射位置最终态: 图层[" & layName & "] 类型可见=" & CStr(okVis) & _
+                ", 复核 GetTypeVisible=" & CStr(LayerManager.GetTypeVisible(CatSnapLayers(i), "NBC")))
+            If Err.Number <> 0 Then Err.Clear
+        End If
+    Next
+    If Err.Number <> 0 Then Err.Clear
+    On Error GoTo 0
+End Sub
+
+Sub RestoreLayerSnapAll()
+    ' 按初始快照写回全部类型 (封面/网格两趟改动后统一调用)
+    Dim jj, tyIdx, layObj
+    If LayerManager Is Nothing Then Exit Sub
+    On Error Resume Next
+    For jj = 0 To LayerN - 1
+        Set layObj = LayerNames(jj)
+        If Not layObj Is Nothing Then
+            For tyIdx = 0 To UBound(VisTypes)
+                LayerManager.SetTypeVisible layObj, VisTypes(tyIdx), CBool(LayerSnap(jj, tyIdx))
+            Next
+        End If
+    Next
+    If Err.Number <> 0 Then
+        Call LogMsg("WARN: 图层显示写回异常: " & Err.Description)
+        Err.Clear
+    End If
+    On Error GoTo 0
+    Call LogMsg("图层显示已按快照写回")
 End Sub
 
 Function FindPlotRobust(PlotMgr, MainName)
@@ -1090,6 +1813,47 @@ Sub WriteUtf8TextFile(Path, Text)
     stream.SaveToFile Path, 2 ' 2 = overwrite
     stream.Close
 End Sub
+
+Function EnumerateCadSpec(SD, pPrefix, pCap)
+    ' BD/F 不被标签谓词支持: 用 SelectFromString 指数探测 + 线性补齐,
+    ' 返回 "BD1 BD2 ..." 形式的串; 找不到或超出上限返回 ""。
+    Dim pLst, pK, pUpper, pStr
+    EnumerateCadSpec = ""
+    Set pLst = Nothing
+    On Error Resume Next
+    Set pLst = SD.CreateEntityList()
+    On Error GoTo 0
+    If pLst Is Nothing Then Exit Function
+    pUpper = 0
+    pK = 1
+    Do While pK <= pCap
+        On Error Resume Next
+        pLst.SelectFromString pPrefix & pK
+        If CLng(pLst.Size) > 0 Then pUpper = pK
+        If Err.Number <> 0 Then
+            Err.Clear
+            Exit Do
+        End If
+        On Error GoTo 0
+        If pUpper < pK Then Exit Do
+        pK = pK * 2
+    Loop
+    If pUpper = 0 Then Exit Function
+    If pUpper > pCap Then pUpper = pCap
+    pStr = ""
+    For pK = 1 To pUpper
+        On Error Resume Next
+        pLst.SelectFromString pPrefix & pK
+        If CLng(pLst.Size) > 0 Then
+            If Len(pStr) > 0 Then pStr = pStr & " "
+            pStr = pStr & pPrefix & pK
+        End If
+        If Err.Number <> 0 Then Err.Clear
+        On Error GoTo 0
+    Next
+    EnumerateCadSpec = pStr
+End Function
+
 
 Sub LogMsg(msg)
     On Error Resume Next

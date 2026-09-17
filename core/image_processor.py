@@ -1109,10 +1109,11 @@ def merge_scale_and_model(
         except Exception as e:
             print(f"[image_processor] 色带回退读取失败 ({scale_path}): {e}")
 
-    # 2.2 模型来源 (2026-09-15 修订: 视口优先)
-    # 视口截图裁出的模型主体恒完整、样式与用户在 Moldflow 所见一致。
-    # 离屏 SaveImage3 的 model_*.png 实机定案丢面/悬浮碎片/换渲染样式
-    # (见 extract_viewport_model 注释), 仅在视口模型不可用时兜底。
+    # 2.2 模型来源 (2026-09-17 修订回: 视口优先)
+    # 实机取证: 离屏导出 (SaveImage3) 屡次丢面/只渲染局部 (用户反馈 5/6/8/11 页
+    # "图片不完整"全部来自离屏), 而"实体混入"问题已由 VBS 侧"临时隐藏层"在
+    # 源头解决 (视口截图认图层隐藏), 所以视口裁剪恢复为主源 (恒完整),
+    # 离屏仅在视口模型不可用时兜底, 兜底时仍跑全套完整性校验。
     im_model_raw = None
     if viewport_path and os.path.exists(viewport_path):
         vp_model = extract_viewport_model(viewport_path)
@@ -1143,12 +1144,10 @@ def merge_scale_and_model(
             print(f"[image_processor] Error reading model {model_path}: {e}")
             return False
 
-        # 仅离屏兜底路径需要信任校验 (视口裁剪已由 extract_viewport_model 把关)。
-        # SaveImage3 离屏导出可靠性差 (实机取证 2026-09-08: 配 2560x1440 却输出
-        # 3840x2160 且模型只渲染出局部; 2026-09-15: 2K 下丢半张面 + 悬浮碎片)。
-        # 校验 1 (主): 实际输出分辨率 != 配置分辨率 → 导出布局已错乱, 弃用;
+        # 兜底路径必须过完整性校验 (离屏导出可靠性差):
+        # 校验 1 (主): 实际输出分辨率 != 配置分辨率 → 导出布局错乱, 弃用;
         # 校验 2: 内容占画布面积比过低 = 渲染残缺;
-        # 校验 3: 割裂特征 (主体 + 悬浮碎片)。
+        # 校验 3: 断带/割裂特征 (主体 + 悬浮碎片)。
         # 命中即回退整张视口图 (完整正确, 与方案 A 同级保底, 绝不输出残缺图)。
         size_mismatch = bool(
             expected_model_size
@@ -1161,9 +1160,6 @@ def merge_scale_and_model(
         )
         h_ratio = im_model_trimmed_chk.height / float(im_model_raw.height)
         aspect = im_model_trimmed_chk.width / float(im_model_trimmed_chk.height)
-        # 渲染断带特征 (实发 2026-09-08 4K 配置: 模型只剩一条横带, 高度占比 30%,
-        # 宽高比 2.66): Fit 后的正常模型高度占比远高于此, 命中即视为残缺。
-        # 权衡: 天然超宽扁零件 Fit 后也可能低占比, 误杀时回退的视口图仍完整可用。
         band_broken = h_ratio < 0.35 and aspect > 2.2
         frag_ok, frag_reason = _model_image_usable(model_path, reject_fragments=True)
         if size_mismatch or area_ratio < 0.10 or band_broken or not frag_ok:

@@ -92,6 +92,11 @@ MISSING_TEXT = "数据缺失"
 MESH_SHORT = "—"
 
 # 本次构建过程中登记的缺失数据字段（build_report 开头清空）
+# GIF 优化去重 (2026-09-17 提速): 同一进程内 (路径+mtime+大小) 只优化一次 ——
+# 双方案(A/B)构建时同一 GIF 曾被重复优化 (白花 2 秒 + 二次量化伤画质)。
+_GIF_OPTIMIZED_STAMPS = set()
+
+
 MISSING_FIELDS = []
 
 
@@ -259,19 +264,26 @@ LEGACY_FIELD_IDS = {
 # 不支持 (枚举 128 字段描述全空, 取证 2026-09-08), 描述映射通道失效 → 文本字段
 # 按项目原始字段表 ID 回退。仅接受非空且非纯数字的文本 (错位 ID 塞不进数值),
 # 每次填充都写入审计日志; 待用户指定真实商料后按 material_fields.json 转储逐项核实锁定。
+# 2026-09-16 实机取证 (Novodur HH-106 / INEOS Styrolution, 与本项目截图逐值核对):
+#   1991=材料ID(10444) 1992=系列(ACRYLONITRILE COPOLYMERS...) 1993=等级代码(CM10444)
+#   1994=供应商代码(STYROLUT) 1995=材料类型(Amorphous) 1996=测试日期(空)
+#   1997=制造商(INEOS Styrolution) 1998=牌号(Novodur HH-106) 1999=材料名称缩写(ABS)
+#   1633=数据来源(Manufacturer (INEOS Styrolution) : pvT-Measured : mech-Measured)
+#   1898=上次修改日期(08-OCT-02) 1899=数据状态(Non-Confidential)
+# 注意: 文本字段的内容由 VBS 写入 field["desc"], values 为空 (旧表 1987-1990/20031 的 ID 实机并不存在)。
 LEGACY_TEXT_IDS = {
-    1999: "family_name",
-    1998: "trade_name",
-    1997: "manufacturer",
-    1996: "data_source",
+    1991: "material_id",
+    1992: "family_name",
+    1993: "grade_code",
+    1994: "supplier_code",
     1995: "material_type",
-    1994: "abbreviation",
-    1991: "date_tested",
-    1990: "date_modified",
-    1989: "data_status",
-    1988: "grade_code",
-    1987: "supplier_code",
-    20031: "fiber_filler",
+    1996: "date_tested",
+    1997: "manufacturer",
+    1998: "trade_name",
+    1999: "abbreviation",
+    1633: "data_source",
+    1898: "date_modified",
+    1899: "data_status",
 }
 
 
@@ -338,6 +350,11 @@ def build_material_info(data_dir):
 
     # 材料全名 "牌号 : 制造商" (如 "Novodur HH-106 : INEOS Styrolution") 拆分;
     # VBS 已拆分导出 trade_name/manufacturer 时优先用之 (取值源头一致, 不重复推断)
+    # 用户定案 (2026-09-16): "纤维/填充物" 在材料对象里没有对应字段
+    # (官方对话框里的"未填充"是派生态), 取不到时按用户要求显示"未填充"。
+    if not str(info.get("fiber_filler", "") or "").strip():
+        info["fiber_filler"] = "未填充"
+
     if not info.get("trade_name") and prop_name:
         parts = prop_name.rsplit(" : ", 1)
         if len(parts) == 2 and parts[0].strip() and parts[1].strip():
@@ -386,7 +403,35 @@ def build_material_info(data_dir):
         return False
 
     fields = [f for f in raw.get("fields", []) if isinstance(f, dict)]
-    desc_hit, legacy_hit = [], []
+    desc_hit, legacy_hit, text_hit = [], [], []
+
+    # 优先级 1: 实机取证的文本字段 ID 表 (2026-09-16; 文本内容写在 desc 里)
+    # 说明: 必须先于"描述关键字"匹配, 否则 "数据来源" 的长文本会被制造商关键字误命中。
+    for field in fields:
+        try:
+            fid = int(field.get("id"))
+        except (TypeError, ValueError):
+            continue
+        key = LEGACY_TEXT_IDS.get(fid)
+        if key is None:
+            continue
+        if info.get(key) and key != "material_id":
+            continue
+        # 2023 实机: 文本字段 values 为空、内容在 desc; 旧数据可能是 desc=标签+values=值
+        raw_text = (
+            str(field.get("values", "") or "").strip()
+            or str(field.get("desc", "") or "").strip()
+        )
+        text = raw_text.split("|")[0].strip()
+        if not text:
+            continue
+        digits_only = text.replace(".", "").replace("-", "").isdigit()
+        if digits_only and key != "material_id":
+            continue  # 材料ID 允许纯数字, 其余文本键跳过纯数字内容
+        info[key] = text
+        text_hit.append(f"{key}(id={fid})")
+
+    # 优先级 2: 描述关键字匹配 (旧版本 FieldDescription 返回字段名时的通道)
     for field in fields:
         desc_l = str(field.get("desc", "") or "").lower()
         raw_vals = field.get("values", "")
@@ -398,7 +443,7 @@ def build_material_info(data_dir):
                     desc_hit.append(key)
                 break  # 一个字段只映射到第一个命中的键
 
-    # 第二级: 已知 ID 回退 (仅填描述映射未命中的键)
+    # 优先级 3: 已知数值字段 ID 白名单
     for field in fields:
         try:
             fid = int(field.get("id"))
@@ -410,24 +455,10 @@ def build_material_info(data_dir):
         if apply_key(key, field.get("values", ""), "legacy"):
             legacy_hit.append(key)
 
-    # 第三级: 文本字段已知 ID 回退 (仅非空非纯数字文本, 带审计)
-    for field in fields:
-        try:
-            fid = int(field.get("id"))
-        except (TypeError, ValueError):
-            continue
-        key = LEGACY_TEXT_IDS.get(fid)
-        if key is None or info.get(key):
-            continue
-        text = str(field.get("values", "") or "").split("|")[0].strip()
-        if not text or text.replace(".", "").replace("-", "").isdigit():
-            continue
-        info[key] = text
-        legacy_hit.append(f"{key}(id={fid})")
-
-    if desc_hit or legacy_hit:
+    if desc_hit or legacy_hit or text_hit:
         print(
-            f"[Material] Mapped fields via desc: {desc_hit}; via known-id fallback: {legacy_hit}"
+            f"[Material] Mapped text-id: {text_hit}; via desc: {desc_hit}; "
+            f"via known-id fallback: {legacy_hit}"
         )
 
     # 官方 Prop.Name 作为牌号兜底 (真实属性名, 非臆造)
@@ -699,6 +730,37 @@ def compute_safe_box_fit(new_image_path, box_left, box_top, box_w, box_h):
     return target_left, target_top, target_w, target_h
 
 
+def _picture_part_shared(pic_shape):
+    """该图片引用的 image part 是否被多处引用。
+
+    2026-09-16 实机取证: 模板第 14/15 页的占位图共用同一部件 (/ppt/media/image5.png),
+    直接改部件 blob 会互相覆盖 -> 两页显示同一张图。
+    """
+    try:
+        rId = pic_shape._element.blip_rId
+        target = pic_shape.part.rels[rId].target_part
+        slides = pic_shape.part.package.main_document_part.presentation.slides
+    except Exception as e:  # noqa: BLE001 - 检测失败时按未共享处理并留痕
+        print(f"[Warning] 共享图片部件检测失败, 按未共享处理: {e}")
+        return False
+    used = 0
+    for slide in slides:
+        for shape in slide.shapes:
+            try:
+                if shape.shape_type != MSO_SHAPE_TYPE.PICTURE:
+                    continue
+                rel = shape.part.rels[shape._element.blip_rId]
+            except Exception:
+                continue
+            if rel.is_external:
+                continue
+            if rel.target_part is target:
+                used += 1
+                if used > 1:
+                    return True
+    return False
+
+
 def fit_picture_in_safe_box(
     slide,
     pic_shape,
@@ -720,6 +782,18 @@ def fit_picture_in_safe_box(
     geom = compute_safe_box_fit(new_image_path, box_left, box_top, box_w, box_h)
     if geom is None:
         return replace_picture_blob(pic_shape, new_image_path)
+
+    # 共享占位图部件 (模板 14/15 页同类情况) -> 插入新图 + 删除旧图, 保证图片独立
+    if _picture_part_shared(pic_shape):
+        try:
+            slide.shapes.add_picture(new_image_path, *geom)
+            pic_shape._element.getparent().remove(pic_shape._element)
+            print(
+                f"  [Fix] 共享占位图部件 -> 改为独立图片: {os.path.basename(new_image_path)}"
+            )
+            return True
+        except Exception as e:  # noqa: BLE001 - 失败回退到直接替换
+            print(f"[Warning] 共享部件独立化失败, 回退直接替换: {e}")
 
     pic_shape.left, pic_shape.top, pic_shape.width, pic_shape.height = geom
 
@@ -1005,9 +1079,15 @@ def render_material_dialog_cards(data_dir, manifest=None):
 
     missing = []
 
+    # 可空字段: 无数据时留空 (不显示红色"数据缺失", 也不计入缺失清单)。
+    # 用户定案 (2026-09-16): 测试日期这类字段材料库里常年为空。
+    OPTIONAL_BLANK_KEYS = {"date_tested"}
+
     def text_val(key, label):
         v = d.get(key)
         if v is None or (isinstance(v, str) and not v.strip()):
+            if key in OPTIONAL_BLANK_KEYS:
+                return ""
             missing.append(f"材料: {label}")
             return MISSING_TEXT
         return str(v)
@@ -1441,16 +1521,11 @@ def build_single_report(
         key = p_cfg["key"]
         p_type = p_cfg.get("type", "image")
 
-        # Slide 14~16: 模板契约保留页 (不放结果图)。用户显式勾选并分配到这三页时
-        # 必须登记缺失, 不允许静默丢弃 (2026-09-09 体检 B-03)。
-        if slide_no in [14, 15, 16]:
-            record_missing(
-                f"结果图未放置: {key} (第 {slide_no} 页为保留页 14-16, 请改页码或取消勾选)"
-            )
-            print(
-                f"[Slide {slide_no}][WARN] 结果 {key} 分配在保留页 14-16, 未放置图片 (已登记缺失)"
-            )
-            continue
+        # Slide 14~16 (XYZ 变形页): 2026-09-16 用户定案起, 与其它结果页同等对待 ——
+        # 默认勾选并输出真实结果图 (页内有占位图则替换, 无图则插入);
+        # 安全框见 SLIDE_SAFE_BOXES[14/15/16] (与第 13 页一致, 无底部遮挡)。
+        # 历史: 2026-09-08 曾把这 3 页列为"保留页"(不放图), 2026-09-09 体检 B-03 仅要求
+        # 静默丢弃要登记; 现按用户定案恢复出图, 该限制整体取消。
 
         # 安全区域配置
         safe_box_cfg = SLIDE_SAFE_BOXES.get(
@@ -1479,12 +1554,24 @@ def build_single_report(
                     # T25 体积预算: GIF 是报告体积大头 — 帧数上限取配置帧数,
                     # 高度上限 720 (PPT 页内显示尺寸约 4.8 英寸 ≈ 720px 足够清晰)
                     n_frames = config.get("animation_settings", {}).get("frames")
-                    optimize_existing_gif(
-                        gif_path,
-                        target_delay_ms=target_delay,
-                        max_frames=int(n_frames) if n_frames else None,
-                        max_height=720,
+                    _gif_stamp = (
+                        os.path.abspath(gif_path),
+                        os.path.getmtime(gif_path),
+                        os.path.getsize(gif_path),
                     )
+                    if _gif_stamp in _GIF_OPTIMIZED_STAMPS:
+                        print(
+                            "[Notice] GIF 本次已优化, 跳过重复优化: "
+                            + os.path.basename(gif_path)
+                        )
+                    else:
+                        _GIF_OPTIMIZED_STAMPS.add(_gif_stamp)
+                        optimize_existing_gif(
+                            gif_path,
+                            target_delay_ms=target_delay,
+                            max_frames=int(n_frames) if n_frames else None,
+                            max_height=720,
+                        )
                 except Exception as e:
                     print(f"[Notice] GIF optimization skipped: {e}")
 
@@ -1641,11 +1728,10 @@ def build_single_report(
     if total_slides >= 8:
         fill_material_molding_range(prs.slides[7], data_dir)
 
-    # ------------------ Slide 14 ~ 16 (XYZ 变形): 不再剥离图片 ------------------
-    # 历史原因: 旧模板 14-16 页内置了 XYZ 变形的占位图, 当时通过程序清空以避免错误结果展示。
-    # 用户裁决 (2026-09-08): 模板本身已手动清空, 此类条目默认不再勾选 (见 report_config.json
-    #   warpage_x/y/z.enabled=false), 因此运行时剥离块的副作用 (把页面正文图片误删) 反而不可接受。
-    # 该块代码移除; 后续如需重新启用 XYZ 变形, 在 PPT 模板直接放对应图片即可, 勿再在程序层剥离。
+    # ------------------ Slide 14 ~ 16 (XYZ 变形): 默认输出真实结果图 ------------------
+    # 历史: 2026-09-08 曾默认不勾选 XYZ (页内占位图手工清理过), 运行时不放图也不剥离。
+    # 2026-09-16 用户定案: XYZ 三页默认勾选并出图 (见 report_config.json warpage_x/y/z.enabled=true),
+    # 由主循环按安全框替换/插入; 程序层依旧不做任何剥离动作 (避免误删页面正文图片)。
 
     # 如果有用户勾选的额外结果项目且已导出图片，追加插入新页
     if extra_plots and total_slides >= 5:
