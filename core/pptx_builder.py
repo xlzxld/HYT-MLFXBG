@@ -1052,17 +1052,27 @@ def render_material_dialog_cards(data_dir, manifest=None):
         f_val = load_truetype_font(14)
         f_sub = load_truetype_font(13, bold=True)
     else:
-        font_path = r"C:\Windows\Fonts\msyh.ttc"
+        # 仅当 image_processor 导入失败才走到这里: 不假设 msyh 一定存在
+        # (无中文字体的机器直接 truetype 会抛异常), 按候选链降级
+        candidates = [
+            r"C:\Windows\Fonts\msyh.ttc",
+            r"C:\Windows\Fonts\simhei.ttf",
+            r"C:\Windows\Fonts\simsun.ttc",
+        ]
+        font_path = next((p for p in candidates if os.path.exists(p)), None)
         font_bold_path = (
             r"C:\Windows\Fonts\msyhbd.ttc"
-            if os.path.exists(r"C:\Windows\Fonts\msyhbd.ttc")
+            if font_path and os.path.exists(r"C:\Windows\Fonts\msyhbd.ttc")
             else font_path
         )
-        f_tab = ImageFont.truetype(font_path, 13)
-        f_lbl = ImageFont.truetype(font_path, 14)
-        f_lbl_bold = ImageFont.truetype(font_bold_path, 14)
-        f_val = ImageFont.truetype(font_path, 14)
-        f_sub = ImageFont.truetype(font_bold_path, 13)
+        if font_path is None:
+            f_tab = f_lbl = f_lbl_bold = f_val = f_sub = ImageFont.load_default()
+        else:
+            f_tab = ImageFont.truetype(font_path, 13)
+            f_lbl = ImageFont.truetype(font_path, 14)
+            f_lbl_bold = ImageFont.truetype(font_bold_path, 14)
+            f_val = ImageFont.truetype(font_path, 14)
+            f_sub = ImageFont.truetype(font_bold_path, 13)
 
     # 读取 material_info.json
     info_file = os.path.join(data_dir, "material_info.json")

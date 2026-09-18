@@ -1,6 +1,6 @@
 {
   "template_pptx": "templates/Moldflow报告模板.pptx",
-  "output_dir": "C:/Users/5600/Documents/MLFX Report/26/09/09.17",
+  "output_dir": "",
   "open_after_export": true,
   "show_gui_before_run": true,
   "screenshot_mode": "BOTH",

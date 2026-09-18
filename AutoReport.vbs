@@ -7,7 +7,7 @@
 '@@
 Option Explicit
 
-Dim FSO, WshShell, ScriptDir, BaseDir, TempDir, ConfigPath, ModeADir, ModeBDir, ScreenshotMode
+Dim FSO, WshShell, BaseDir, TempDir, ConfigPath, ModeADir, ModeBDir, ScreenshotMode
 Dim ConfigJsonStr, HTML, ConfigObj
 Dim ImageWidth, ImageHeight, KeepView, NFrames, DelayMs
 Dim SynergyGetter, Synergy, StudyDoc, PlotManager, Viewer, DiagnosisManager, PredicateManager
