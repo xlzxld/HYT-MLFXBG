@@ -254,8 +254,8 @@ pre-commit run --all-files
 `0` 成功; `1` 环境问题 (模板缺失等 FileNotFoundError); `2` 构建失败。VBS 失败弹窗按此解释。
 
 ### 已知的平台绑定与降级路径
-- `AutoReport.vbs:24` 硬编码 BaseDir 为绝对路径 (脚本目录无 config 时回退);
-  换机器/移目录须检查该行。GBK 编码 (ANSI), 编辑必须按 GBK 读写, 严禁 UTF-8 覆盖。
+- `AutoReport.vbs` 的 BaseDir 由 `WScript.ScriptFullName` 自动推导 (随脚本目录走,
+  无绝对路径, 换机器/移目录免改); 文件为 GBK 编码 (ANSI), 编辑必须按 GBK 读写, 严禁 UTF-8 覆盖。
 - pywin32 移植触发条件 (届时另立项): 再出现任一 VBS 层 bug, 或 Moldflow 大版本升级。
 - COM 层失效的降级: 用方式 4 命令行对已有 temp/ 数据离线重构报告 (半手动)。
 - ~~待 Moldflow 实机验证项: ExtractPeak 的 GetDepValues/GetIndpValues API~~

@@ -113,6 +113,6 @@ python core/pptx_builder.py --config report_config.json --data-dir temp --mode B
 ## 六、 已知平台绑定
 
 - `AutoReport.vbs` 必须保存为 **GBK/ANSI**；以 UTF-8 覆盖会导致中文字符串判据全部失效。
-- `AutoReport.vbs` 内有 BaseDir 绝对路径兜底（脚本目录无 `report_config.json` 时生效），换机器需检查。
+- `AutoReport.vbs` 的 BaseDir 由 `WScript.ScriptFullName` 自动推导（随脚本目录走，无绝对路径），换机器/移目录可直接运行。
 - 4K（3840×2160）离屏导出在实机上大面积断带，默认锁 2K；详见 `AI_GUIDE.md` 坑册。
 - 模板几何硬编码于 `SLIDE_SAFE_BOXES`，换母版会触发 sha256 告警，须人工核对版式。
