@@ -6,6 +6,6 @@
 __all__ = ["FMT_CHECK_CMD", "LINT_CMD", "TEST_CMD", "BUILD_CMD"]
 
 FMT_CHECK_CMD = "python -m ruff format --check config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py probe_api.py check_env.py tests/run_checks.py"
-LINT_CMD = "python -m py_compile config_gui.py core/gif_enhancer.py core/image_processor.py core/pptx_builder.py probe_api.py check_env.py tests/run_checks.py"
+LINT_CMD = "python .agents/structure_guard.py --quiet --color never ."
 TEST_CMD = "python tests/run_checks.py"
 BUILD_CMD = None

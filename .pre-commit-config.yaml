@@ -1,13 +1,46 @@
+# tsc-managed —— 本文件由 tsc 技能托管：上游模板更新时会被自动覆盖；项目自己的修改会被冲掉。若要接管，请删除本标记行并自行维护。
+# 契约执法层 —— 本地 git 钩子
+# 落盘位置：项目根 .pre-commit-config.yaml（由 `tsc.py install` 自动部署）
+# 激活：pre-commit install && pre-commit install --hook-type commit-msg
+#
+# 注意：本文件里的钩子**不是可选项**。一旦装了本地钩子，它们就会真实拦截提交；
+# 没装依赖包时不是"跳过"而是"报错拦住"。启用前请按下面各钩子的说明装好依赖。
+# 非 Node 项目部署时，tsc 会自动剔除 node-only 区块（commitlint），不会引入 npm。
+
 repos:
+  # 1) 密钥扫描
+  #    官方入口默认是 `gitleaks git --pre-commit --staged`，即**只扫本次暂存的内容**。
+  #    这对"防止新密钥进来"是够的；但它不翻历史，仓库里已有的旧密钥不会被它发现。
+  #    想连历史一起清，另跑一次：gitleaks git --redact --log-opts="--all"
   - repo: https://github.com/gitleaks/gitleaks
-    rev: v8.30.1
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # v8.30.1（钉 commit SHA，杜绝浮动 tag）
     hooks:
       - id: gitleaks
+        name: 密钥扫描 (gitleaks)
 
+
+  # 3) 结构门禁（零依赖本地脚本，随 tsc install / sync 落盘到 .agents/）
+  #    提交前对暂存文件跑五层结构检查（括号平衡/语法/缩进/形态）。
+  #    只在本钩子层（pre-commit framework）激活时运行；
+  #    用 install_hook.py 裸钩子的项目与此条目二选一（叠加只是重复检查，不冲突）。
+  #
+  #    --strict：门禁模式必带——暂存文件被截断 / 检查降级时宁可拦下也不给"假绿"；
+  #    --allow-missing-tools：显式放行"工具缺席"类降级（node/PyYAML 等不在 PATH），
+  #    截断、超大文件、未知语言等降级仍然会拦。
+  #
+  #    ⚠️ entry 里的解释器名（python3 / python）由 `tsc install / sync` 按**部署这台
+  #    机器**探测后填入，不是模板写死的值。原因：pre-commit 的 local 钩子只有
+  #    `language: system` 能跑项目内脚本，而 system 语言的 entry 首令牌**完全靠系统
+  #    PATH 解析**——python3（macOS / 多数 Linux）与 python（Windows 常见）没有交集，
+  #    写死任何一个都会在另一平台报 "Executable ... not found" 把提交堵住。
+  #    换平台后重跑一次 `tsc sync` 即自动校正（内容比对走同一套渲染逻辑，能自愈）。
+  #    （另两条路已实测排除：language: python 会先对项目根 pip install .，没有
+  #      setup.py/pyproject.toml 就 ERROR: Directory '.' is not installable；
+  #      language: script + 项目内 sh 启动器在 Windows 上报 /bin/sh not found。）
   - repo: local
     hooks:
-      - id: commitlint
-        name: commitlint (Conventional Commits)
+      - id: structure-guard
+        name: 结构门禁 (structure_guard)
         language: system
-        entry: npx --no -- commitlint --edit
-        stages: [commit-msg]
+        entry: python .agents/structure_guard.py --staged --strict --allow-missing-tools --quiet --color never
+        pass_filenames: false
